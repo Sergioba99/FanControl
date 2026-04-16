@@ -1,0 +1,259 @@
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-family: Arial;
+    text-align: center;
+}
+
+body{
+    margin: 0;
+    background-color:#333; 
+}
+
+.header { 
+    font-size: 3vw;
+    text-align:center;
+    background-color:#333; 
+    color: white;
+    margin: 0;
+    padding: 20px;
+}
+
+h4 {
+    font-size: 2vw;
+    text-align:center;
+    margin: 30px; 
+}
+
+p { 
+    font-size: 2.0rem;
+}
+
+th, tr {
+    padding: 10px;
+    font-size: 1vw;
+}
+.form_temp{
+    justify-content: center;
+    display: inline-block;
+}
+
+.temp_header{
+    width: 5vw;
+}
+
+.temp_time{
+    width: 5vw; 
+    text-align: center;
+}
+
+.temp_mode{
+    width: 5vw;
+    text-align: left;
+}
+.cell_icon{
+    font-size: 1.5vw;
+    text-align: center;
+}
+
+.cell_data{
+    font-size: 1.5vw;
+    text-align: left;
+}
+/*
+.units {
+    font-size: 2.0rem;
+}*/
+/*
+.dht-labels{
+    font-size: 2.0rem;
+    vertical-align:middle;
+}*/
+
+.update-button{ 
+    width: fit-content;
+    padding: 10px 20px;
+    font-size: 1vw;
+    text-align: center;
+    outline: none;
+    color: #fff;
+    background-color: #2f4468;
+    border: none;
+    border-radius: 5px;
+    box-shadow: 0 6px #999;
+    cursor: pointer;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+}
+
+.update-button:hover {background-color: #1f2e45}
+.update-button:active {
+  background-color: #1f2e45;
+  box-shadow: 0 4px #666;
+  transform: translateY(2px);
+}
+
+.contenedor{
+    display:flex;
+    justify-content: center;
+}
+
+.izquierda {
+    min-width: 0;
+    flex:30%;
+    background-color: #bbb;
+    padding: 10px;
+    height: auto;
+}
+
+.derecha {
+    min-width: 0;
+    flex:30%;
+    background-color: #bbb;
+    padding: 10px;
+    height: auto;
+}
+
+.base{
+    min-width: 0;
+    flex:59%;
+    padding: 10px;
+    background-color:#eee;
+    height: auto;
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 120px;
+    height: 68px
+} 
+
+.switch input {
+    display: none
+}
+
+.slider {
+    position: absolute; 
+    top: 0; 
+    left: 0; 
+    right: 0; 
+    bottom: 0; 
+    background-color: #ccc; 
+    border-radius: 6px
+}
+
+.slider:before {
+    font-family: "Font Awesome 5 Free";
+    font-size:xxx-large;
+    font-weight: 90; 
+    content: "\f0eb";
+    text-align: center;
+    color: var(--checked-bcolor);
+    position: absolute; 
+    height: 52px; 
+    width: 52px; 
+    left: 8px; 
+    bottom: 8px; 
+    background-color: #fff; 
+    -webkit-transition: .4s; 
+    transition: .4s; 
+    border-radius: 3px
+}
+
+input:checked+.slider {
+    background-color: var(--checked-bcolor);
+}
+
+input:checked+.slider:before {
+    -webkit-transform: translateX(52px); 
+    -ms-transform: translateX(52px); 
+    transform: translateX(52px)
+}
+
+.button {
+    width: 10vw;
+    padding: 10px 20px;
+    font-size: 1vw;
+    text-align: center;
+    outline: none;
+    color: #fff;
+    background-color: #2f4468;
+    border: none;
+    border-radius: 5px;
+    box-shadow: 0 6px #999;
+    cursor: pointer;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+  }
+
+  .button:hover {background-color: #1f2e45}
+  .button:active {
+    background-color: #1f2e45;
+    box-shadow: 0 4px #666;
+    transform: translateY(2px);
+  }
+
+@media screen and (max-width: 1000px) {
+    .contenedor{
+        flex-wrap: wrap;
+    }
+    .base, .izquierda, .derecha {   
+        flex: 100%;
+    }
+    th, tr {
+        padding: 10px;
+        font-size: 6.0vw;
+    }
+    .update-button{
+        font-size: 4vw;
+    }
+    .button{
+        font-size: 4vw;
+        width: 40vw;
+        min-width: 100px;
+    }
+    .header { 
+        font-size: 10vw;
+    }
+    h4{
+        font-size: 8vw;
+    }
+    .temp_header{
+        width: 20vw;
+        font-size: 4vw;
+    }
+    
+    .temp_time{
+        width: 20vw; 
+        text-align: center;
+        font-size: 4vw;
+    }
+    
+    .temp_mode{
+        width: 20vw;
+        text-align: left;
+        font-size: 4vw;
+    }
+    .cell_icon{
+        font-size: 5vw;
+        text-align: center;
+    }
+    
+    .cell_data{
+        font-size: 5vw;
+        text-align: left;
+    }
+}

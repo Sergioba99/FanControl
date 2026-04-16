@@ -1,0 +1,156 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <link rel="shortcut icon" href="data:image/x-icon;base64,AAABAAEAAQEAAAEAIAAwAAAAFgAAACgAAAABAAAAAgAAAAEAIAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AAAAAA==" />
+  <title>ROOM CONTROL</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+    <div class="header">
+        <h2 class="header">ROOM CONTROL</h2>
+    </div>
+    <div class="contenedor">
+      <div></div>
+      <div class="izquierda">
+        <h4>Configuracion</h4>
+        <input id="update-button" class ="update-button" type="button" onclick="update()" value="Actualizar firmware">
+        <div class="temporizador_personalizado" style="align-items:center;">  
+          <h4>Temporizador personalizado</h4>
+            <form onSubmit = "event.preventDefault(); sendFormData(this);" class="form_temp">
+              <div style="justify-content: center;">
+                <table style="justify-content: center;">
+                  <tr>
+                    <th class="temp_header"><label for="time">Tiempo</label></th>
+                    <th class="temp_header">Modo</th>
+                  </tr>
+                  <tr>
+                    <td class="temp_time"><input type="time" name="time"></td>
+                    <td class="temp_mode">
+                      <input type="radio" name="mode" value="low">
+                      <label>LOW</label><br>
+                      <input type="radio" name="mode" value="med">
+                      <label>MED</label><br>
+                      <input type="radio" name="mode" value="high">
+                      <label>HIGH</label><br>
+                    </td>
+                  </tr>
+                  
+                </table>
+              </div>
+              <input type="submit" value="Enviar">
+            </form>
+        </div>
+      </div>
+
+      <div class="base">
+        <h4>Datos</h4>
+          <div class = datos style="display: flex; justify-content: center;">
+            <table style="align-items: flex-start;">
+              <tr>
+                <th class = cell_icon><i class="fas fa-calendar-alt" style="color:#292929;"></i></th> 
+                <th class = cell_data><span class="time-label">Fecha local:</span></th> 
+                <th class = cell_data><span id="local_date">%LOCALDATE%</span></th>
+              </tr>
+              
+              <tr>
+                <th class = cell_icon><i class="fas fa-clock" style="color:#292929;"></i></th>
+                <th class = cell_data><span class="time-label">Hora local:</span></th>
+                <th class = cell_data><span id="local_time">%LOCALTIME%</span></th>
+              </tr>
+
+              <tr>
+                <th class = cell_icon><i class="fas fa-thermometer-half" style="color:#059e8a;"></i></th>
+                <th class = cell_data><span class="dht-labels">Temperatura:</span></th>
+                <th class = cell_data><span id="temperature">%TEMPERATURE%</span>
+                <span class="units">&deg;C<br></span></th>
+              </tr>
+
+              <tr>
+                <th class = cell_icon><i class="fas fa-tint" style="color:#00add6;"></i></th>
+                <th class = cell_data><span class="dht-labels">Humedad:</span></th>
+                <th class = cell_data><span id="humidity">%HUMIDITY%</span>
+                <span class="units" id="perc">&percnt;</span></th>
+              </tr>
+
+            </table>
+          </div>
+      </div>
+
+      <div class="derecha">
+        <h4>Controles del ventilador</h4>
+        <p>%BUTTONPLACEHOLDER%</p>
+      </div>
+    </div>
+
+</body>
+<script>
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("local_time").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/localtime", true);
+    xhttp.send();
+  }, 2000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("local_date").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/localdate", true);
+    xhttp.send();
+  }, 2000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("temperature").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/temperature", true);
+    xhttp.send();
+  }, 2000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("humidity").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/humidity", true);
+    xhttp.send();
+  }, 2000 ) ;
+
+  function update()
+    {
+      var loc = window.location.href;
+      var upd = String(loc)+"update"
+      window.location.href=upd
+    }
+
+  function toggleCheckboxButton(x) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", "/botones?button=" + x.id, true);
+      xhr.send();
+    }
+
+  function sendFormData(form) {
+    var xhr = new XMLHttpRequest();
+    var time = form.time.value;
+    var mode = form.mode.value;
+    console.log(mode);
+    console.log(time);
+    xhr.open("GET", "/temporizador?button=" + mode +"&time=" + time, true);
+    xhr.send();
+  }
+</script>
+</html>

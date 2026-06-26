@@ -1,0 +1,95 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <link rel="shortcut icon" href="data:image/x-icon;base64,AAABAAEAAQEAAAEAIAAwAAAAFgAAACgAAAABAAAAAgAAAAEAIAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AAAAAA==" />
+  <title>ROOM CONTROL - CONFIG</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <link rel="stylesheet" type="text/css" href="style.css?v=5">
+</head>
+<body>
+    <div class="header">
+        <h2 class="header">ROOM CONTROL</h2>
+    </div>
+    <div class="config-page">
+      <div class="base config-panel">
+        <div class="config-title">
+          <h4>Configuracion</h4>
+          <div class="config-actions">
+            <a class="update-button nav-link" href="/">Volver al control</a>
+            <input id="update-button" class="update-button" type="button" value="Actualizar firmware">
+          </div>
+        </div>
+
+        <div class="config-section">
+          <h4>Control automatico</h4>
+          <form id="auto-form" class="auto-settings-form">
+            <input id="auto-enabled" type="hidden" name="enabled" value="0">
+            <div class="settings-grid">
+              <label class="setting-field" for="auto-low">
+                <span>LOW desde</span>
+                <input id="auto-low" class="timer-input" type="text" name="low" inputmode="decimal" value="25.0" required>
+                <span class="setting-unit">&deg;C</span>
+              </label>
+              <label class="setting-field" for="auto-med">
+                <span>MED desde</span>
+                <input id="auto-med" class="timer-input" type="text" name="med" inputmode="decimal" value="27.0" required>
+                <span class="setting-unit">&deg;C</span>
+              </label>
+              <label class="setting-field" for="auto-high">
+                <span>HIGH desde</span>
+                <input id="auto-high" class="timer-input" type="text" name="high" inputmode="decimal" value="29.0" required>
+                <span class="setting-unit">&deg;C</span>
+              </label>
+              <label class="setting-field" for="auto-humidity">
+                <span>Boost humedad</span>
+                <input id="auto-humidity" class="timer-input" type="text" name="humidity" inputmode="decimal" value="65.0" required>
+                <span class="setting-unit">%</span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <input class="update-button" type="submit" value="Guardar auto">
+            </div>
+          </form>
+        </div>
+
+        <div class="config-section">
+          <h4>Radiofrecuencia</h4>
+          <form id="rf-form" class="auto-settings-form">
+            <div class="settings-grid">
+              <label class="setting-field" for="rf-default">
+                <span>General</span>
+                <input id="rf-default" class="timer-input" type="text" name="default" inputmode="numeric" pattern="[0-9]*" value="20" required>
+                <span class="setting-unit">rep</span>
+              </label>
+              <label class="setting-field" for="rf-low">
+                <span>LOW</span>
+                <input id="rf-low" class="timer-input" type="text" name="low" inputmode="numeric" pattern="[0-9]*" value="30" required>
+                <span class="setting-unit">rep</span>
+              </label>
+              <label class="setting-field" for="rf-med">
+                <span>MED</span>
+                <input id="rf-med" class="timer-input" type="text" name="med" inputmode="numeric" pattern="[0-9]*" value="20" required>
+                <span class="setting-unit">rep</span>
+              </label>
+              <label class="setting-field" for="rf-high">
+                <span>HIGH</span>
+                <input id="rf-high" class="timer-input" type="text" name="high" inputmode="numeric" pattern="[0-9]*" value="20" required>
+                <span class="setting-unit">rep</span>
+              </label>
+              <label class="setting-field" for="rf-off">
+                <span>FAN OFF</span>
+                <input id="rf-off" class="timer-input" type="text" name="off" inputmode="numeric" pattern="[0-9]*" value="20" required>
+                <span class="setting-unit">rep</span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <input class="update-button" type="submit" value="Guardar RF">
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  <script src="app.js?v=14"></script>
+</body>
+</html>

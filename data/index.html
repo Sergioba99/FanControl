@@ -1,0 +1,132 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <link rel="shortcut icon" href="data:image/x-icon;base64,AAABAAEAAQEAAAEAIAAwAAAAFgAAACgAAAABAAAAAgAAAAEAIAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AAAAAA==" />
+  <title>ROOM CONTROL</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <link rel="stylesheet" type="text/css" href="style.css?v=3">
+</head>
+<body>
+    <div class="header">
+        <h2 class="header">ROOM CONTROL</h2>
+    </div>
+    <div class="contenedor">
+      <div></div>
+      <div class="izquierda">
+        <h4>Configuracion</h4>
+        <a class="update-button nav-link" href="/config">Configuracion</a>
+        <div class="temporizador_personalizado" style="align-items:center;">  
+          <h4>Temporizador personalizado</h4>
+            <form id="timer-form" class="form_temp">
+              <div style="justify-content: center;">
+                <table style="justify-content: center;">
+                  <tr>
+                    <th class="temp_header">Duracion</th>
+                    <th class="temp_header">Modo</th>
+                  </tr>
+                  <tr>
+                    <td class="temp_time">
+                      <label for="timer-hours">Horas</label>
+                      <input id="timer-hours" class="timer-input" type="text" name="hours" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="0" required>
+                      <label for="timer-minutes">Minutos</label>
+                      <input id="timer-minutes" class="timer-input" type="text" name="minutes" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="30" required>
+                    </td>
+                    <td class="temp_mode">
+                      <input type="radio" name="mode" value="low" checked>
+                      <label>LOW</label><br>
+                      <input type="radio" name="mode" value="med">
+                      <label>MED</label><br>
+                      <input type="radio" name="mode" value="high">
+                      <label>HIGH</label><br>
+                    </td>
+                  </tr>
+                  
+                </table>
+              </div>
+              <input type="submit" value="Enviar">
+              <input id="cancel-timer-button" type="button" value="Cancelar">
+            </form>
+        </div>
+      </div>
+
+      <div class="base">
+        <h4>Datos</h4>
+          <div class="datos" style="display: flex; justify-content: center;">
+            <table style="align-items: flex-start;">
+              <tr>
+                <th class="cell_icon"><i class="fas fa-calendar-alt" style="color:#292929;"></i></th> 
+                <th class="cell_data"><span class="time-label">Fecha local:</span></th> 
+                <th class="cell_data"><span id="local_date">--</span></th>
+              </tr>
+              
+              <tr>
+                <th class="cell_icon"><i class="fas fa-clock" style="color:#292929;"></i></th>
+                <th class="cell_data"><span class="time-label">Hora local:</span></th>
+                <th class="cell_data"><span id="local_time">--</span></th>
+              </tr>
+
+              <tr>
+                <th class="cell_icon"><i class="fas fa-thermometer-half" style="color:#059e8a;"></i></th>
+                <th class="cell_data"><span class="dht-labels">Temperatura:</span></th>
+                <th class="cell_data"><span id="temperature">--</span>
+                <span class="units">&deg;C<br></span></th>
+              </tr>
+
+              <tr>
+                <th class="cell_icon"><i class="fas fa-tint" style="color:#00add6;"></i></th>
+                <th class="cell_data"><span class="dht-labels">Humedad:</span></th>
+                <th class="cell_data"><span id="humidity">--</span>
+                <span class="units" id="perc">&percnt;</span></th>
+              </tr>
+
+              <tr>
+                <th class="cell_icon"><i class="fas fa-hourglass-half" style="color:#2f4468;"></i></th>
+                <th class="cell_data"><span class="time-label">Temporizador:</span></th>
+                <th class="cell_data"><span id="timer_status">Sin temporizador activo</span></th>
+              </tr>
+
+              <tr>
+                <th class="cell_icon"><i class="fas fa-sync-alt" style="color:#059e8a;"></i></th>
+                <th class="cell_data"><span class="time-label">Automatico:</span></th>
+                <th class="cell_data"><span id="auto_status">Auto no disponible</span></th>
+              </tr>
+
+            </table>
+          </div>
+      </div>
+
+      <div class="derecha">
+        <h4>Controles del ventilador</h4>
+        <div class="fan-controls">
+          <div class="botones" style="display: flex; justify-content: center;">
+            <table>
+              <tr>
+                <th><button class="button" id="luz" onmousedown="toggleCheckboxButton(this);">LUZ ON/OFF</button></th>
+                <th><button class="button" id="high" onmousedown="toggleCheckboxButton(this);">HIGH</button></th>
+              </tr>
+              <tr>
+                <th><button class="button" id="2h" onmousedown="toggleCheckboxButton(this);">2H</button></th>
+                <th><button class="button" id="med" onmousedown="toggleCheckboxButton(this);">MED</button></th>
+              </tr>
+              <tr>
+                <th><button class="button" id="4h" onmousedown="toggleCheckboxButton(this);">4H</button></th>
+                <th><button class="button" id="low" onmousedown="toggleCheckboxButton(this);">LOW</button></th>
+              </tr>
+              <tr>
+                <th><button class="button" id="8h" onmousedown="toggleCheckboxButton(this);">8H</button></th>
+                <th><button class="button" id="off" onmousedown="toggleCheckboxButton(this);">FAN OFF</button></th>
+              </tr>
+            </table>
+          </div>
+        </div>
+        <div class="auto_control" style="align-items:center;">
+          <h4>Automatico</h4>
+          <input id="auto-enabled" class="auto-checkbox" type="checkbox" name="enabled">
+          <label id="auto-toggle-label" class="button auto-toggle-button" for="auto-enabled">AUTO OFF</label>
+        </div>
+      </div>
+    </div>
+  <script src="app.js?v=12"></script>
+</body>
+</html>

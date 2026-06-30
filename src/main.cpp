@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
-#include <WiFiMulti.h>
+#include <DNSServer.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncElegantOTA.h>
@@ -11,14 +10,19 @@
 #include <DHTesp.h>
 #include <ESP32Time.h>
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include "fan_rf.h"
+#include "logic_commands.h"
+#include "wifi_profiles.h"
 
 ESP32Time rtc;
 
 const char* ntpServer1 = "europe.pool.ntp.org";
 const char* ntpServer2 = "ntp.roa.es";
 const char* ntpServer3 = "ntp.rediris.es";
-const long gmtOffset_sec = 1*3600;
-const int dayligthOffset_sec = 1*3600;
+const char* timezone = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 const char* PARAM_INPUT_1 = "button";
 const char* PARAM_TIMER_TIME = "time";
@@ -36,25 +40,12 @@ const char* PARAM_RF_HIGH = "high";
 const char* PARAM_RF_OFF = "off";
 
 RCSwitch mySwitch = RCSwitch();
-Preferences preferences;
-//Defnimos objeto multiwifi
-WiFiMulti wifimulti;
+DNSServer dnsServer;
 
-// Credenciales de acceso de las diferentes redes
-/*
-const char *ssid1 = "MiFibra-1DAA";
-const char *password1 = "yYjNz2V9";
-
-*/
-const char *ssid3 = "MiFibra-1DAA-V-IoT";
-const char *password3 = "yYjNz2V9";
-
-IPAddress local_IP(192, 168, 1, 148);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress dns (8,8,8,8);
-
-const uint32_t TiempoEsperaWifi = 5000;
+const char *WIFI_SETUP_SSID = "FanControl-Setup";
+const char *WIFI_SETUP_PASSWORD = "fancontrol";
+const unsigned long wifiProfileAttemptTimeout = 8000;
+const unsigned long wifiReconnectInterval = 30000;
 
 #define DHTPIN 19 // Digital pin connected to the DHT sensor - GPIO12 = D6
 
@@ -70,26 +61,67 @@ DHTesp dht;
 float t = 0.0;
 float h = 0.0;
 
-// Generally, you should use "unsigned long" for variables that hold time
-// The value will quickly become too large for an int to store
 unsigned long dhtpreviousMillis = 0; // will store last time DHT was updated
 unsigned long timepreviousMillis = 0;
-unsigned long wifiMillis = 0;
 
 // Updates DHT readings every 10 seconds
 const long dhtinterval = 30000;
 const long timeinterval = 50000;
-const long wifiinterval = 60000;
 const unsigned int rfRepeatTransmit = 20;
 const unsigned int rfLowRepeatTransmit = 30;
 const unsigned long autoControlInterval = 60000;
 const unsigned long autoMinChangeInterval = 180000;
 const float autoHysteresis = 0.5;
 
+QueueHandle_t logicCommandQueue = nullptr;
+SemaphoreHandle_t stateMutex = nullptr;
+const UBaseType_t LOGIC_QUEUE_LENGTH = 12;
+const uint8_t NVS_DIRTY_AUTO = 1U << 0;
+const uint8_t NVS_DIRTY_RF = 1U << 1;
+const uint8_t NVS_DIRTY_FAN = 1U << 2;
+const unsigned long NVS_WRITE_DELAY = 1000;
+uint8_t pendingNvsWrites = 0;
+unsigned long nvsDirtyAt = 0;
+
 String local_time = "";
 String local_date = "";
 
 AsyncWebServer server(80);
+
+struct WifiSettings
+{
+  bool configured = false;
+  bool dhcp = true;
+  String ssid = "";
+  String password = "";
+  IPAddress localIp;
+  IPAddress gateway;
+  IPAddress subnet;
+  IPAddress dns;
+};
+
+WifiSettings wifiSettings;
+WifiProfileStore wifiStore = {};
+int8_t activeWifiProfile = -1;
+volatile int8_t pendingWifiProfile = -1;
+uint8_t attemptedWifiProfiles = 0;
+volatile bool wifiPortalActive = false;
+bool wifiWasConnected = false;
+bool mdnsStarted = false;
+volatile bool wifiApplyPending = false;
+volatile bool wifiFinishPending = false;
+volatile bool wifiResetPending = false;
+bool timeSynchronized = false;
+volatile unsigned long wifiApplyAt = 0;
+volatile unsigned long wifiFinishAt = 0;
+volatile unsigned long wifiResetAt = 0;
+unsigned long wifiConnectStartedAt = 0;
+unsigned long wifiLastAttemptAt = 0;
+unsigned long ntpLastAttemptAt = 0;
+String wifiScanJson = "{\"networks\":[]}";
+String wifiScanOptions = "<option value=\"\">No se encontraron redes</option>";
+volatile bool wifiScanRequested = false;
+bool wifiScanInProgress = false;
 
 struct TimerState
 {
@@ -134,12 +166,30 @@ bool isFanControlCommand(const String &command)
   return command == "2h" || command == "4h" || command == "8h" || command == "high" || command == "med" || command == "low" || command == "off";
 }
 
+void lockState()
+{
+  if (stateMutex != nullptr)
+  {
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+  }
+}
+
+void unlockState()
+{
+  if (stateMutex != nullptr)
+  {
+    xSemaphoreGive(stateMutex);
+  }
+}
+
 void clearCustomTimer()
 {
+  lockState();
   customTimer.active = false;
   customTimer.mode = "";
   customTimer.startMillis = 0;
   customTimer.durationMillis = 0;
+  unlockState();
 }
 
 unsigned int normalizeRfRepeat(unsigned int repeat, unsigned int fallback)
@@ -153,19 +203,20 @@ unsigned int normalizeRfRepeat(unsigned int repeat, unsigned int fallback)
 
 void loadAutoSettings()
 {
-  preferences.begin("fancontrol", true);
-  autoSettings.enabled = preferences.getBool("auto_en", false);
-  autoSettings.lowTemp = preferences.getFloat("auto_low", 25.0);
-  autoSettings.medTemp = preferences.getFloat("auto_med", 27.0);
-  autoSettings.highTemp = preferences.getFloat("auto_high", 29.0);
-  autoSettings.humidityBoost = preferences.getFloat("auto_hum", 65.0);
-  rfSettings.defaultRepeat = preferences.getUInt("rf_def", rfRepeatTransmit);
-  rfSettings.lowRepeat = preferences.getUInt("rf_low", rfLowRepeatTransmit);
-  rfSettings.medRepeat = preferences.getUInt("rf_med", rfRepeatTransmit);
-  rfSettings.highRepeat = preferences.getUInt("rf_high", rfRepeatTransmit);
-  rfSettings.offRepeat = preferences.getUInt("rf_off", rfRepeatTransmit);
-  currentFanMode = preferences.getString("fan_mode", "off");
-  preferences.end();
+  Preferences prefs;
+  prefs.begin("fancontrol", true);
+  autoSettings.enabled = prefs.getBool("auto_en", false);
+  autoSettings.lowTemp = prefs.getFloat("auto_low", 25.0);
+  autoSettings.medTemp = prefs.getFloat("auto_med", 27.0);
+  autoSettings.highTemp = prefs.getFloat("auto_high", 29.0);
+  autoSettings.humidityBoost = prefs.getFloat("auto_hum", 65.0);
+  rfSettings.defaultRepeat = prefs.getUInt("rf_def", rfRepeatTransmit);
+  rfSettings.lowRepeat = prefs.getUInt("rf_low", rfLowRepeatTransmit);
+  rfSettings.medRepeat = prefs.getUInt("rf_med", rfRepeatTransmit);
+  rfSettings.highRepeat = prefs.getUInt("rf_high", rfRepeatTransmit);
+  rfSettings.offRepeat = prefs.getUInt("rf_off", rfRepeatTransmit);
+  currentFanMode = prefs.getString("fan_mode", "off");
+  prefs.end();
 
   rfSettings.defaultRepeat = normalizeRfRepeat(rfSettings.defaultRepeat, rfRepeatTransmit);
   rfSettings.lowRepeat = normalizeRfRepeat(rfSettings.lowRepeat, rfLowRepeatTransmit);
@@ -183,38 +234,847 @@ void loadAutoSettings()
   }
 }
 
+String escapeJson(const String &value)
+{
+  String escaped;
+  escaped.reserve(value.length() + 8);
+  for (size_t i = 0; i < value.length(); i++)
+  {
+    char character = value.charAt(i);
+    if (character == '\\' || character == '"')
+    {
+      escaped += '\\';
+      escaped += character;
+    }
+    else if (character == '\n')
+    {
+      escaped += "\\n";
+    }
+    else if (character == '\r')
+    {
+      escaped += "\\r";
+    }
+    else if (static_cast<uint8_t>(character) >= 0x20)
+    {
+      escaped += character;
+    }
+  }
+  return escaped;
+}
+
+String escapeHtml(const String &value)
+{
+  String escaped;
+  escaped.reserve(value.length() + 8);
+  for (size_t i = 0; i < value.length(); i++)
+  {
+    char character = value.charAt(i);
+    if (character == '&')
+    {
+      escaped += "&amp;";
+    }
+    else if (character == '<')
+    {
+      escaped += "&lt;";
+    }
+    else if (character == '>')
+    {
+      escaped += "&gt;";
+    }
+    else if (character == '"')
+    {
+      escaped += "&quot;";
+    }
+    else if (character == '\'')
+    {
+      escaped += "&#39;";
+    }
+    else
+    {
+      escaped += character;
+    }
+  }
+  return escaped;
+}
+
+void buildWifiScanCache(int scanResult)
+{
+  if (scanResult < 0)
+  {
+    lockState();
+    wifiScanJson = "{\"networks\":[]}";
+    wifiScanOptions = "<option value=\"\">No se pudo escanear</option>";
+    unlockState();
+    WiFi.scanDelete();
+    Serial.println("No se pudo escanear redes WiFi");
+    return;
+  }
+
+  String scanJson = "{\"networks\":[";
+  String scanOptions = "<option value=\"\">Selecciona una red</option>";
+  scanJson.reserve(32 + scanResult * 96);
+  scanOptions.reserve(64 + scanResult * 96);
+  for (int i = 0; i < scanResult; i++)
+  {
+    String ssid = WiFi.SSID(i);
+    if (i > 0)
+    {
+      scanJson += ',';
+    }
+    scanJson += "{\"ssid\":\"" + escapeJson(ssid) + "\",\"rssi\":" + String(WiFi.RSSI(i));
+    scanJson += ",\"open\":" + String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "true" : "false") + "}";
+
+    if (!ssid.isEmpty())
+    {
+      String safeSsid = escapeHtml(ssid);
+      scanOptions += "<option value=\"" + safeSsid + "\">" + safeSsid + " (" + String(WiFi.RSSI(i)) + " dBm";
+      scanOptions += WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? ", abierta)</option>" : ")</option>";
+    }
+  }
+  scanJson += "]}";
+  lockState();
+  wifiScanJson = scanJson;
+  wifiScanOptions = scanOptions;
+  unlockState();
+  WiFi.scanDelete();
+  Serial.println("Redes WiFi detectadas: " + String(scanResult));
+}
+
+void refreshWifiScanCache()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, false);
+  delay(100);
+  buildWifiScanCache(WiFi.scanNetworks(false, true));
+}
+
+void handleWifiScan()
+{
+  if (wifiScanRequested && !wifiScanInProgress)
+  {
+    wifiScanRequested = false;
+    WiFi.scanDelete();
+    int result = WiFi.scanNetworks(true, true);
+    if (result == WIFI_SCAN_FAILED)
+    {
+      buildWifiScanCache(result);
+      return;
+    }
+    wifiScanInProgress = true;
+    Serial.println("Escaneo WiFi manual iniciado");
+  }
+
+  if (!wifiScanInProgress)
+  {
+    return;
+  }
+
+  int result = WiFi.scanComplete();
+  if (result >= 0)
+  {
+    wifiScanInProgress = false;
+    buildWifiScanCache(result);
+  }
+  else if (result == WIFI_SCAN_FAILED)
+  {
+    wifiScanInProgress = false;
+    buildWifiScanCache(result);
+  }
+}
+
+void loadWifiSettings()
+{
+  memset(&wifiStore, 0, sizeof(wifiStore));
+  Preferences prefs;
+  prefs.begin("fancontrol", true);
+  bool storeLoaded = prefs.getBytesLength("wifi_profiles") == sizeof(wifiStore) &&
+                     prefs.getBytes("wifi_profiles", &wifiStore, sizeof(wifiStore)) == sizeof(wifiStore) &&
+                     wifiStore.magic == WIFI_STORE_MAGIC && wifiStore.version == WIFI_STORE_VERSION;
+
+  bool legacyConfigured = prefs.getBool("wifi_set", false);
+  String legacySsid = prefs.getString("wifi_ssid", "");
+  String legacyPassword = prefs.getString("wifi_pass", "");
+  bool legacyDhcp = prefs.getBool("wifi_dhcp", true);
+  uint32_t legacyIp = prefs.getUInt("wifi_ip", 0);
+  uint32_t legacyGateway = prefs.getUInt("wifi_gw", 0);
+  uint32_t legacySubnet = prefs.getUInt("wifi_mask", 0);
+  uint32_t legacyDns = prefs.getUInt("wifi_dns", 0);
+  prefs.end();
+
+  if (!storeLoaded)
+  {
+    memset(&wifiStore, 0, sizeof(wifiStore));
+    wifiStore.magic = WIFI_STORE_MAGIC;
+    wifiStore.version = WIFI_STORE_VERSION;
+    wifiStore.lastSuccessful = -1;
+
+    if (legacyConfigured && !legacySsid.isEmpty())
+    {
+      WifiProfileRecord &profile = wifiStore.profiles[0];
+      profile.used = 1;
+      profile.dhcp = legacyDhcp ? 1 : 0;
+      strlcpy(profile.ssid, legacySsid.c_str(), sizeof(profile.ssid));
+      strlcpy(profile.password, legacyPassword.c_str(), sizeof(profile.password));
+      profile.localIp = legacyIp;
+      profile.gateway = legacyGateway;
+      profile.subnet = legacySubnet;
+      profile.dns = legacyDns;
+      wifiStore.lastSuccessful = 0;
+    }
+
+    prefs.begin("fancontrol", false);
+    prefs.putBytes("wifi_profiles", &wifiStore, sizeof(wifiStore));
+    prefs.end();
+  }
+
+  if (wifiStore.lastSuccessful < 0 || wifiStore.lastSuccessful >= MAX_WIFI_PROFILES ||
+      !wifiStore.profiles[wifiStore.lastSuccessful].used)
+  {
+    wifiStore.lastSuccessful = -1;
+  }
+
+  activeWifiProfile = wifiStore.lastSuccessful;
+  if (activeWifiProfile < 0)
+  {
+    for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+    {
+      if (wifiStore.profiles[i].used)
+      {
+        activeWifiProfile = i;
+        break;
+      }
+    }
+  }
+}
+
+void saveWifiProfiles()
+{
+  lockState();
+  WifiProfileStore store = wifiStore;
+  unlockState();
+  Preferences prefs;
+  prefs.begin("fancontrol", false);
+  prefs.putBytes("wifi_profiles", &store, sizeof(store));
+  prefs.end();
+}
+
+uint8_t getWifiProfileCount()
+{
+  uint8_t count = 0;
+  lockState();
+  for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+  {
+    count += wifiStore.profiles[i].used ? 1 : 0;
+  }
+  unlockState();
+  return count;
+}
+
+bool isWifiProfileUsed(uint8_t index)
+{
+  if (index >= MAX_WIFI_PROFILES)
+  {
+    return false;
+  }
+  lockState();
+  bool used = wifiStore.profiles[index].used;
+  unlockState();
+  return used;
+}
+
+String getWifiProfilePassword(uint8_t index)
+{
+  if (index >= MAX_WIFI_PROFILES)
+  {
+    return String();
+  }
+  lockState();
+  String password = wifiStore.profiles[index].used ? wifiStore.profiles[index].password : "";
+  unlockState();
+  return password;
+}
+
+int8_t findWifiProfileBySsid(const String &ssid)
+{
+  int8_t result = -1;
+  lockState();
+  for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+  {
+    if (wifiStore.profiles[i].used && ssid == wifiStore.profiles[i].ssid)
+    {
+      result = i;
+      break;
+    }
+  }
+  unlockState();
+  return result;
+}
+
+int8_t findFreeWifiProfile()
+{
+  int8_t result = -1;
+  lockState();
+  for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+  {
+    if (!wifiStore.profiles[i].used)
+    {
+      result = i;
+      break;
+    }
+  }
+  unlockState();
+  return result;
+}
+
+bool parseWifiProfileIndex(const String &value, int8_t &index)
+{
+  if (value.length() != 1 || value.charAt(0) < '0' || value.charAt(0) >= '0' + MAX_WIFI_PROFILES)
+  {
+    return false;
+  }
+  index = value.charAt(0) - '0';
+  return true;
+}
+
+void loadWifiProfile(uint8_t index)
+{
+  if (index >= MAX_WIFI_PROFILES)
+  {
+    lockState();
+    wifiSettings = WifiSettings();
+    activeWifiProfile = -1;
+    unlockState();
+    return;
+  }
+
+  lockState();
+  if (!wifiStore.profiles[index].used)
+  {
+    wifiSettings = WifiSettings();
+    activeWifiProfile = -1;
+    unlockState();
+    return;
+  }
+  WifiProfileRecord profile = wifiStore.profiles[index];
+  wifiSettings.configured = true;
+  wifiSettings.dhcp = profile.dhcp != 0;
+  wifiSettings.ssid = profile.ssid;
+  wifiSettings.password = profile.password;
+  wifiSettings.localIp = IPAddress(profile.localIp);
+  wifiSettings.gateway = IPAddress(profile.gateway);
+  wifiSettings.subnet = IPAddress(profile.subnet);
+  wifiSettings.dns = IPAddress(profile.dns);
+  activeWifiProfile = index;
+  unlockState();
+}
+
+void storeWifiProfile(uint8_t index, const WifiSettings &settings)
+{
+  lockState();
+  WifiProfileRecord &profile = wifiStore.profiles[index];
+  memset(&profile, 0, sizeof(profile));
+  profile.used = 1;
+  profile.dhcp = settings.dhcp ? 1 : 0;
+  strlcpy(profile.ssid, settings.ssid.c_str(), sizeof(profile.ssid));
+  strlcpy(profile.password, settings.password.c_str(), sizeof(profile.password));
+  profile.localIp = static_cast<uint32_t>(settings.localIp);
+  profile.gateway = static_cast<uint32_t>(settings.gateway);
+  profile.subnet = static_cast<uint32_t>(settings.subnet);
+  profile.dns = static_cast<uint32_t>(settings.dns);
+  unlockState();
+}
+
+void startWifiPortal()
+{
+  if (wifiPortalActive)
+  {
+    return;
+  }
+
+  WiFi.mode(WIFI_AP_STA);
+  if (!WiFi.softAP(WIFI_SETUP_SSID, WIFI_SETUP_PASSWORD))
+  {
+    Serial.println("No se pudo iniciar el portal WiFi");
+    return;
+  }
+
+  dnsServer.start(53, "*", WiFi.softAPIP());
+  wifiPortalActive = true;
+  Serial.print("Portal WiFi disponible en http://");
+  Serial.println(WiFi.softAPIP());
+}
+
+void stopWifiPortal()
+{
+  if (!wifiPortalActive)
+  {
+    return;
+  }
+
+  dnsServer.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  wifiPortalActive = false;
+  Serial.println("Portal WiFi cerrado");
+}
+
+void connectToConfiguredWifi()
+{
+  if (!wifiSettings.configured)
+  {
+    startWifiPortal();
+    return;
+  }
+
+  WiFi.mode(wifiPortalActive ? WIFI_AP_STA : WIFI_STA);
+  WiFi.disconnect(false, false);
+
+  if (wifiSettings.dhcp)
+  {
+    IPAddress unsetAddress(0, 0, 0, 0);
+    WiFi.config(unsetAddress, unsetAddress, unsetAddress);
+  }
+  else if (!WiFi.config(wifiSettings.localIp, wifiSettings.gateway, wifiSettings.subnet, wifiSettings.dns))
+  {
+    Serial.println("No se pudo aplicar la configuracion IP estatica");
+  }
+
+  WiFi.begin(wifiSettings.ssid.c_str(), wifiSettings.password.c_str());
+  wifiConnectStartedAt = millis();
+  wifiLastAttemptAt = wifiConnectStartedAt;
+  Serial.print("Conectando a ");
+  Serial.println(wifiSettings.ssid);
+}
+
+int8_t findNextWifiProfile()
+{
+  int8_t result = -1;
+  lockState();
+  if (wifiStore.lastSuccessful >= 0 && wifiStore.lastSuccessful < MAX_WIFI_PROFILES &&
+      wifiStore.profiles[wifiStore.lastSuccessful].used &&
+      !(attemptedWifiProfiles & (1U << wifiStore.lastSuccessful)))
+  {
+    result = wifiStore.lastSuccessful;
+  }
+  else
+  {
+    for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+    {
+      if (wifiStore.profiles[i].used && !(attemptedWifiProfiles & (1U << i)))
+      {
+        result = i;
+        break;
+      }
+    }
+  }
+  unlockState();
+  return result;
+}
+
+void connectToWifiProfile(uint8_t index)
+{
+  loadWifiProfile(index);
+  attemptedWifiProfiles |= 1U << index;
+  connectToConfiguredWifi();
+}
+
+void startWifiConnectionCycle()
+{
+  attemptedWifiProfiles = 0;
+  int8_t nextProfile = findNextWifiProfile();
+  if (nextProfile < 0)
+  {
+    wifiSettings = WifiSettings();
+    activeWifiProfile = -1;
+    WiFi.disconnect(false, false);
+    startWifiPortal();
+    return;
+  }
+  connectToWifiProfile(nextProfile);
+}
+
+String getWifiStatusJson()
+{
+  bool connected = WiFi.status() == WL_CONNECTED;
+  lockState();
+  WifiSettings settings = wifiSettings;
+  int8_t activeProfile = activeWifiProfile;
+  unlockState();
+  String json = "{\"configured\":" + String(getWifiProfileCount() > 0 ? "true" : "false");
+  json.reserve(384);
+  json += ",\"connected\":" + String(connected ? "true" : "false");
+  json += ",\"portalActive\":" + String(wifiPortalActive ? "true" : "false");
+  json += ",\"mode\":\"" + String(settings.dhcp ? "dhcp" : "static") + "\"";
+  json += ",\"ssid\":\"" + escapeJson(connected ? WiFi.SSID() : settings.ssid) + "\"";
+  json += ",\"ip\":\"" + String(connected ? WiFi.localIP().toString() : "") + "\"";
+  json += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0);
+  json += ",\"profileCount\":" + String(getWifiProfileCount());
+  json += ",\"activeProfile\":" + String(activeProfile);
+  json += ",\"apSsid\":\"" + String(WIFI_SETUP_SSID) + "\"";
+  json += ",\"apIp\":\"" + String(wifiPortalActive ? WiFi.softAPIP().toString() : "") + "\"";
+  json += ",\"configuredIp\":\"" + settings.localIp.toString() + "\"";
+  json += ",\"gateway\":\"" + settings.gateway.toString() + "\"";
+  json += ",\"subnet\":\"" + settings.subnet.toString() + "\"";
+  json += ",\"dns\":\"" + settings.dns.toString() + "\"}";
+  return json;
+}
+
+bool isWifiPortalRequest(AsyncWebServerRequest *request)
+{
+  return wifiPortalActive && request->client()->localIP() == WiFi.softAPIP();
+}
+
+String getWifiProfilesHtml()
+{
+  lockState();
+  WifiProfileStore store = wifiStore;
+  int8_t activeProfile = activeWifiProfile;
+  unlockState();
+
+  uint8_t profileCount = 0;
+  for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+  {
+    profileCount += store.profiles[i].used ? 1 : 0;
+  }
+  if (profileCount == 0)
+  {
+    return "<p class=\"form-message\">No hay redes guardadas.</p>";
+  }
+
+  String html = "<div class=\"wifi-profile-list\">";
+  html.reserve(128 + profileCount * 420);
+  for (uint8_t i = 0; i < MAX_WIFI_PROFILES; i++)
+  {
+    const WifiProfileRecord &profile = store.profiles[i];
+    if (!profile.used)
+    {
+      continue;
+    }
+
+    html += "<div class=\"wifi-profile-item\"><div><strong>" + escapeHtml(profile.ssid) + "</strong>";
+    html += "<span>" + String(profile.dhcp ? "DHCP" : "IP estatica") + "</span>";
+    if (activeProfile == i && WiFi.status() == WL_CONNECTED)
+    {
+      html += "<span class=\"profile-active\">Conectada</span>";
+    }
+    else if (store.lastSuccessful == i)
+    {
+      html += "<span>Ultima valida</span>";
+    }
+    html += "</div><div class=\"profile-actions\">";
+    html += "<a class=\"update-button nav-link secondary-button\" href=\"/wifi?profile=" + String(i) + "\">Editar</a>";
+    html += "<form class=\"wifi-delete-form\" method=\"post\" action=\"/wifi/profile/delete\">";
+    html += "<input type=\"hidden\" name=\"profile\" value=\"" + String(i) + "\">";
+    html += "<button class=\"update-button danger-button\" type=\"submit\">Eliminar</button></form></div></div>";
+  }
+  html += "</div>";
+  return html;
+}
+
+String wifiPageProcessor(const String &var, int8_t editIndex)
+{
+  WifiProfileRecord editedProfile = {};
+  lockState();
+  bool editing = editIndex >= 0 && editIndex < MAX_WIFI_PROFILES && wifiStore.profiles[editIndex].used;
+  if (editing)
+  {
+    editedProfile = wifiStore.profiles[editIndex];
+  }
+  unlockState();
+  const WifiProfileRecord *profile = editing ? &editedProfile : nullptr;
+
+  if (var == "WIFI_NETWORK_OPTIONS")
+  {
+    lockState();
+    String options = wifiScanOptions;
+    unlockState();
+    return options;
+  }
+  if (var == "WIFI_CONNECTION")
+  {
+    return WiFi.status() == WL_CONNECTED ? "Conectado a " + escapeHtml(WiFi.SSID()) : "Sin conexion";
+  }
+  if (var == "WIFI_CURRENT_IP")
+  {
+    return WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "--";
+  }
+  if (var == "WIFI_SSID")
+  {
+    return editing ? escapeHtml(profile->ssid) : String();
+  }
+  if (var == "WIFI_PROFILE_INDEX")
+  {
+    return editing ? String(editIndex) : "-1";
+  }
+  if (var == "WIFI_FORM_TITLE")
+  {
+    return editing ? "Editar red" : "Nueva red";
+  }
+  if (var == "WIFI_DHCP_CHECKED")
+  {
+    return !editing || profile->dhcp ? "checked" : String();
+  }
+  if (var == "WIFI_STATIC_CHECKED")
+  {
+    return editing && !profile->dhcp ? "checked" : String();
+  }
+  if (var == "WIFI_IP")
+  {
+    return editing && !profile->dhcp ? IPAddress(profile->localIp).toString() : String();
+  }
+  if (var == "WIFI_GATEWAY")
+  {
+    return editing && !profile->dhcp ? IPAddress(profile->gateway).toString() : String();
+  }
+  if (var == "WIFI_SUBNET")
+  {
+    return editing && !profile->dhcp ? IPAddress(profile->subnet).toString() : "255.255.255.0";
+  }
+  if (var == "WIFI_DNS")
+  {
+    return editing && !profile->dhcp ? IPAddress(profile->dns).toString() : String();
+  }
+  if (var == "WIFI_SAVED_PROFILES")
+  {
+    return getWifiProfilesHtml();
+  }
+  if (var == "WIFI_PROFILE_COUNT")
+  {
+    return String(getWifiProfileCount()) + "/" + String(MAX_WIFI_PROFILES);
+  }
+  if (var == "WIFI_SAVE_DISABLED")
+  {
+    return !editing && getWifiProfileCount() >= MAX_WIFI_PROFILES ? "disabled" : String();
+  }
+  if (var == "WIFI_FINISH_HIDDEN")
+  {
+    return WiFi.status() == WL_CONNECTED && wifiPortalActive ? String() : "hidden";
+  }
+  return String();
+}
+
+void sendWifiResultPage(AsyncWebServerRequest *request, const String &title, const String &message, bool refresh)
+{
+  String html = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\">";
+  html.reserve(1024);
+  html += "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
+  if (refresh)
+  {
+    html += "<meta http-equiv=\"refresh\" content=\"4;url=/wifi\">";
+  }
+  html += "<title>Fan Control - WiFi</title><link rel=\"stylesheet\" href=\"/style.css?v=7\"></head>";
+  html += "<body><div class=\"header\"><h2 class=\"header\">FAN CONTROL</h2></div>";
+  html += "<main class=\"config-page\"><div class=\"base config-panel wifi-panel\"><section class=\"config-section\">";
+  html += "<h4>" + escapeHtml(title) + "</h4><p class=\"form-message\">" + escapeHtml(message) + "</p>";
+  html += "<div class=\"form-actions\"><a class=\"update-button nav-link\" href=\"/wifi\">Continuar</a></div>";
+  html += "</section></div></main></body></html>";
+  request->send(200, "text/html", html);
+}
+
+void handleWifi(unsigned long currentMillis)
+{
+  if (wifiPortalActive)
+  {
+    dnsServer.processNextRequest();
+  }
+
+  handleWifiScan();
+
+  if (wifiResetPending && currentMillis - wifiResetAt >= 500)
+  {
+    wifiResetPending = false;
+    wifiApplyPending = false;
+    lockState();
+    memset(&wifiStore, 0, sizeof(wifiStore));
+    wifiStore.magic = WIFI_STORE_MAGIC;
+    wifiStore.version = WIFI_STORE_VERSION;
+    wifiStore.lastSuccessful = -1;
+    wifiSettings = WifiSettings();
+    activeWifiProfile = -1;
+    unlockState();
+    attemptedWifiProfiles = 0;
+    saveWifiProfiles();
+    WiFi.disconnect(false, false);
+    startWifiPortal();
+  }
+
+  if (wifiApplyPending && currentMillis - wifiApplyAt >= 500)
+  {
+    wifiApplyPending = false;
+    attemptedWifiProfiles = 0;
+    if (pendingWifiProfile >= 0 && isWifiProfileUsed(pendingWifiProfile))
+    {
+      connectToWifiProfile(pendingWifiProfile);
+    }
+    else
+    {
+      startWifiConnectionCycle();
+    }
+    pendingWifiProfile = -1;
+  }
+
+  if (wifiFinishPending && currentMillis - wifiFinishAt >= 500)
+  {
+    wifiFinishPending = false;
+    stopWifiPortal();
+  }
+
+  bool connected = WiFi.status() == WL_CONNECTED;
+  if (connected)
+  {
+    if (!wifiWasConnected)
+    {
+      wifiWasConnected = true;
+      wifiConnectStartedAt = 0;
+      Serial.print("WiFi conectado. IP: ");
+      Serial.println(WiFi.localIP());
+
+      lockState();
+      bool updateLastSuccessful = activeWifiProfile >= 0 && wifiStore.lastSuccessful != activeWifiProfile;
+      if (updateLastSuccessful)
+      {
+        wifiStore.lastSuccessful = activeWifiProfile;
+      }
+      unlockState();
+      if (updateLastSuccessful)
+      {
+        saveWifiProfiles();
+      }
+
+      if (!mdnsStarted)
+      {
+        mdnsStarted = MDNS.begin("fancontrol");
+        if (mdnsStarted)
+        {
+          MDNS.addService("http", "tcp", 80);
+          Serial.println("mDNS disponible en http://fancontrol.local");
+        }
+        else
+        {
+          Serial.println("No se pudo iniciar mDNS; use la direccion IP");
+        }
+      }
+    }
+
+    if (!timeSynchronized && currentMillis - ntpLastAttemptAt >= 2000)
+    {
+      ntpLastAttemptAt = currentMillis;
+      struct tm timeInfo;
+      if (getLocalTime(&timeInfo, 10))
+      {
+        rtc.setTimeStruct(timeInfo);
+        timeSynchronized = true;
+      }
+    }
+    return;
+  }
+
+  if (wifiWasConnected)
+  {
+    wifiWasConnected = false;
+    wifiConnectStartedAt = currentMillis;
+    timeSynchronized = false;
+    if (mdnsStarted)
+    {
+      MDNS.end();
+      mdnsStarted = false;
+    }
+    Serial.println("Conexion WiFi perdida");
+  }
+
+  if (getWifiProfileCount() == 0)
+  {
+    startWifiPortal();
+    return;
+  }
+
+  if (wifiConnectStartedAt == 0)
+  {
+    wifiConnectStartedAt = currentMillis;
+  }
+
+  if (!wifiScanInProgress && currentMillis - wifiConnectStartedAt >= wifiProfileAttemptTimeout)
+  {
+    int8_t nextProfile = findNextWifiProfile();
+    if (nextProfile >= 0)
+    {
+      connectToWifiProfile(nextProfile);
+    }
+    else if (!wifiPortalActive)
+    {
+      startWifiPortal();
+      wifiLastAttemptAt = currentMillis;
+    }
+  }
+
+  if (!wifiApplyPending && !wifiScanInProgress && currentMillis - wifiLastAttemptAt >= wifiReconnectInterval)
+  {
+    startWifiConnectionCycle();
+  }
+}
+
 void saveAutoSettings()
 {
-  preferences.begin("fancontrol", false);
-  preferences.putBool("auto_en", autoSettings.enabled);
-  preferences.putFloat("auto_low", autoSettings.lowTemp);
-  preferences.putFloat("auto_med", autoSettings.medTemp);
-  preferences.putFloat("auto_high", autoSettings.highTemp);
-  preferences.putFloat("auto_hum", autoSettings.humidityBoost);
-  preferences.end();
+  pendingNvsWrites |= NVS_DIRTY_AUTO;
+  nvsDirtyAt = millis();
 }
 
 void saveRfSettings()
 {
-  preferences.begin("fancontrol", false);
-  preferences.putUInt("rf_def", rfSettings.defaultRepeat);
-  preferences.putUInt("rf_low", rfSettings.lowRepeat);
-  preferences.putUInt("rf_med", rfSettings.medRepeat);
-  preferences.putUInt("rf_high", rfSettings.highRepeat);
-  preferences.putUInt("rf_off", rfSettings.offRepeat);
-  preferences.end();
+  pendingNvsWrites |= NVS_DIRTY_RF;
+  nvsDirtyAt = millis();
 }
 
 void saveFanState()
 {
-  preferences.begin("fancontrol", false);
-  preferences.putString("fan_mode", currentFanMode);
-  preferences.putBool("auto_en", autoSettings.enabled);
-  preferences.end();
+  pendingNvsWrites |= NVS_DIRTY_FAN;
+  nvsDirtyAt = millis();
+}
+
+void flushPendingSettings(unsigned long currentMillis)
+{
+  if (pendingNvsWrites == 0 || currentMillis - nvsDirtyAt < NVS_WRITE_DELAY)
+  {
+    return;
+  }
+
+  lockState();
+  uint8_t writes = pendingNvsWrites;
+  pendingNvsWrites = 0;
+  AutoSettings automatic = autoSettings;
+  RfSettings rf = rfSettings;
+  String fanMode = currentFanMode;
+  unlockState();
+
+  Preferences prefs;
+  prefs.begin("fancontrol", false);
+  if (writes & NVS_DIRTY_AUTO)
+  {
+    prefs.putBool("auto_en", automatic.enabled);
+    prefs.putFloat("auto_low", automatic.lowTemp);
+    prefs.putFloat("auto_med", automatic.medTemp);
+    prefs.putFloat("auto_high", automatic.highTemp);
+    prefs.putFloat("auto_hum", automatic.humidityBoost);
+  }
+  if (writes & NVS_DIRTY_RF)
+  {
+    prefs.putUInt("rf_def", rf.defaultRepeat);
+    prefs.putUInt("rf_low", rf.lowRepeat);
+    prefs.putUInt("rf_med", rf.medRepeat);
+    prefs.putUInt("rf_high", rf.highRepeat);
+    prefs.putUInt("rf_off", rf.offRepeat);
+  }
+  if (writes & NVS_DIRTY_FAN)
+  {
+    prefs.putString("fan_mode", fanMode);
+  }
+  prefs.end();
 }
 
 void setAutoModeEnabled(bool enabled)
 {
+  lockState();
+  bool changed = autoSettings.enabled != enabled;
   autoSettings.enabled = enabled;
   autoPreviousMillis = 0;
   autoLastChangeMillis = 0;
@@ -226,59 +1086,23 @@ void setAutoModeEnabled(bool enabled)
   {
     autoFanMode = "off";
   }
-  saveAutoSettings();
+  unlockState();
+  if (changed)
+  {
+    saveAutoSettings();
+  }
 }
 
 bool sendFanCommand(const String &command)
 {
-  /*  RF CODES
-    LUZ   111101010001
-    2H    111110100010
-    4H    111110100100
-    8H    111110101000
-    HIGH  111101101001
-    MED   111100100011
-    LOW   111100010111
-    OFF   111101000101
-  */
-  mySwitch.setRepeatTransmit(getRfRepeatForCommand(command));
-
-  if (command == "luz"){
-    mySwitch.send("111101010001");
-  }
-  else if (command == "2h")
-  {
-    mySwitch.send("111110100010");
-  }
-  else if (command == "4h")
-  {
-    mySwitch.send("111110100100");
-  }
-  else if (command == "8h")
-  {
-    mySwitch.send("111110101000");
-  }
-  else if (command == "high")
-  {
-    mySwitch.send("111101101001");
-  }
-  else if (command == "med")
-  {
-    mySwitch.send("111100100011");
-  }
-  else if (command == "low")
-  {
-    mySwitch.send("111100010111");
-  }
-  else if (command == "off")
-  {
-    mySwitch.send("111101000101");
-  }
-  else
+  const char *code = findFanRfCode(command);
+  if (code == nullptr)
   {
     return false;
   }
 
+  mySwitch.setRepeatTransmit(getRfRepeatForCommand(command));
+  mySwitch.send(code);
   return true;
 }
 
@@ -291,8 +1115,14 @@ bool sendFanMode(const String &mode)
 
   if (mode == "low" || mode == "med" || mode == "high" || mode == "off")
   {
+    lockState();
+    bool changed = currentFanMode != mode;
     currentFanMode = mode;
-    saveFanState();
+    unlockState();
+    if (changed)
+    {
+      saveFanState();
+    }
   }
 
   return true;
@@ -440,23 +1270,38 @@ bool validateRfRepeat(unsigned long repeat)
 
 String getAutoSettingsJson()
 {
-  return "{\"enabled\":" + jsonBool(autoSettings.enabled) +
-    ",\"low\":" + String(autoSettings.lowTemp, 1) +
-    ",\"med\":" + String(autoSettings.medTemp, 1) +
-    ",\"high\":" + String(autoSettings.highTemp, 1) +
-    ",\"humidity\":" + String(autoSettings.humidityBoost, 1) +
-    ",\"currentMode\":\"" + currentFanMode + "\"" +
-    ",\"autoMode\":\"" + autoFanMode + "\"}";
+  lockState();
+  AutoSettings settings = autoSettings;
+  String fanMode = currentFanMode;
+  String automaticMode = autoFanMode;
+  unlockState();
+  String json;
+  json.reserve(160);
+  json = "{\"enabled\":" + jsonBool(settings.enabled);
+  json += ",\"low\":" + String(settings.lowTemp, 1);
+  json += ",\"med\":" + String(settings.medTemp, 1);
+  json += ",\"high\":" + String(settings.highTemp, 1);
+  json += ",\"humidity\":" + String(settings.humidityBoost, 1);
+  json += ",\"currentMode\":\"" + fanMode + "\"";
+  json += ",\"autoMode\":\"" + automaticMode + "\"}";
+  return json;
 }
 
 String getRfSettingsJson()
 {
-  return "{\"default\":" + String(rfSettings.defaultRepeat) +
-    ",\"low\":" + String(rfSettings.lowRepeat) +
-    ",\"med\":" + String(rfSettings.medRepeat) +
-    ",\"high\":" + String(rfSettings.highRepeat) +
-    ",\"off\":" + String(rfSettings.offRepeat) +
-    ",\"currentMode\":\"" + currentFanMode + "\"}";
+  lockState();
+  RfSettings settings = rfSettings;
+  String fanMode = currentFanMode;
+  unlockState();
+  String json;
+  json.reserve(128);
+  json = "{\"default\":" + String(settings.defaultRepeat);
+  json += ",\"low\":" + String(settings.lowRepeat);
+  json += ",\"med\":" + String(settings.medRepeat);
+  json += ",\"high\":" + String(settings.highRepeat);
+  json += ",\"off\":" + String(settings.offRepeat);
+  json += ",\"currentMode\":\"" + fanMode + "\"}";
+  return json;
 }
 
 bool validateAutoSettings(float lowTemp, float medTemp, float highTemp, float humidityBoost)
@@ -553,8 +1398,10 @@ void runAutoControl(unsigned long currentMillis)
 
   if (sendFanMode(targetMode))
   {
+    lockState();
     autoFanMode = targetMode;
     autoLastChangeMillis = currentMillis;
+    unlockState();
     Serial.println("Auto ventilador: " + targetMode);
   }
 }
@@ -583,76 +1430,183 @@ String formatDuration(unsigned long durationMillis)
 
 String getTimerStatus()
 {
-  if (!customTimer.active)
+  lockState();
+  TimerState timer = customTimer;
+  unlockState();
+  if (!timer.active)
   {
     return "{\"active\":false}";
   }
 
-  unsigned long elapsed = millis() - customTimer.startMillis;
-  if (elapsed >= customTimer.durationMillis)
+  unsigned long elapsed = millis() - timer.startMillis;
+  if (elapsed >= timer.durationMillis)
   {
     return "{\"active\":false,\"expired\":true}";
   }
 
-  unsigned long remaining = customTimer.durationMillis - elapsed;
-  return "{\"active\":true,\"mode\":\"" + customTimer.mode + "\",\"remaining\":\"" + formatDuration(remaining) + "\"}";
+  unsigned long remaining = timer.durationMillis - elapsed;
+  unsigned long remainingSeconds = (remaining + 999UL) / 1000UL;
+  return "{\"active\":true,\"mode\":\"" + timer.mode + "\",\"remaining\":\"" + formatDuration(remaining) +
+    "\",\"remainingSeconds\":" + String(remainingSeconds) + "}";
 }
 
-// Replaces placeholder with DHT values
-String processor(const String &var)
+String getDashboardStatusJson()
 {
-  //Serial.println(var);
-  if (var == "TEMPERATURE")
+  lockState();
+  String timeValue = local_time;
+  String dateValue = local_date;
+  float temperature = t;
+  float humidity = h;
+  unlockState();
+
+  UBaseType_t queuedCommands = logicCommandQueue != nullptr ? uxQueueMessagesWaiting(logicCommandQueue) : 0;
+  String json;
+  json.reserve(512);
+  json = "{\"time\":\"" + timeValue + "\",\"date\":\"" + dateValue + "\"";
+  json += ",\"temperature\":" + String(isnan(temperature) ? "null" : String(temperature, 1));
+  json += ",\"humidity\":" + String(isnan(humidity) ? "null" : String(humidity, 1));
+  json += ",\"timer\":" + getTimerStatus();
+  json += ",\"auto\":" + getAutoSettingsJson();
+  json += ",\"queuedCommands\":" + String(queuedCommands) + "}";
+  return json;
+}
+
+bool enqueueLogicCommand(const LogicCommand &command)
+{
+  return logicCommandQueue != nullptr && xQueueSend(logicCommandQueue, &command, 0) == pdTRUE;
+}
+
+void processLogicCommand(const LogicCommand &command)
+{
+  if (command.type == LogicCommandType::Fan)
   {
-    return String(t);
-  }
-  else if (var == "HUMIDITY")
-  {
-    return String(h);
-  }
-  else if(var == "BUTTONPLACEHOLDER")
-  {
-    String buttons = "";
-    buttons += "<div class = botones style=\"display: flex; justify-content: center;\"><table><tr>";
-    buttons += "<th><button class=\"button\" id=\"luz\" onmousedown=\"toggleCheckboxButton(this);\">LUZ ON/OFF</button></th>";
-    buttons += "<th><button class=\"button\" id=\"high\" onmousedown=\"toggleCheckboxButton(this);\">HIGH</button></th>";
-    buttons += "</tr>";
-    buttons += "<tr>";
-    buttons += "<th><button class=\"button\" id=\"2h\" onmousedown=\"toggleCheckboxButton(this);\">2H</button></th>";
-    buttons += "<th><button class=\"button\" id=\"med\" onmousedown=\"toggleCheckboxButton(this);\">MED</button></th>";
-    buttons += "</tr>";
-    buttons += "<tr>";
-    buttons += "<th><button class=\"button\" id=\"4h\" onmousedown=\"toggleCheckboxButton(this);\">4H</button></th>";
-    buttons += "<th><button class=\"button\" id=\"low\" onmousedown=\"toggleCheckboxButton(this);\">LOW</button></th>";
-    buttons += "</tr>";
-    buttons += "<tr>";
-    buttons += "<th><button class=\"button\" id=\"8h\" onmousedown=\"toggleCheckboxButton(this);\">8H</button></th>";
-    buttons += "<th><button class=\"button\" id=\"off\" onmousedown=\"toggleCheckboxButton(this);\">FAN OFF</button></th>";
-    buttons += "</tr></table></div>";
-    return buttons;
+    String mode(command.mode);
+    if (sendFanMode(mode) && isFanControlCommand(mode))
+    {
+      clearCustomTimer();
+      setAutoModeEnabled(false);
+    }
+    return;
   }
 
-  else if(var == "LOCALTIME")
+  if (command.type == LogicCommandType::TimerCancel)
   {
-    return String(local_time);
+    clearCustomTimer();
+    Serial.println("Temporizador cancelado");
+    return;
   }
 
-  else if(var == "LOCALDATE")
+  if (command.type == LogicCommandType::TimerStart)
   {
-    return String(local_date);
+    String mode(command.mode);
+    lockState();
+    customTimer.active = true;
+    customTimer.mode = mode;
+    customTimer.startMillis = millis();
+    customTimer.durationMillis = command.durationMillis;
+    unlockState();
+    setAutoModeEnabled(false);
+
+    if (sendFanMode(mode))
+    {
+      Serial.println("Temporizador iniciado: " + mode);
+    }
+    else
+    {
+      clearCustomTimer();
+      Serial.println("No se pudo iniciar el temporizador");
+    }
+    return;
   }
 
-  return String();
+  if (command.type == LogicCommandType::AutoSettings)
+  {
+    lockState();
+    bool changed = false;
+    if (command.hasEnabled)
+    {
+      changed = changed || autoSettings.enabled != command.enabled;
+      autoSettings.enabled = command.enabled;
+      autoFanMode = command.enabled ? "" : "off";
+      autoLastChangeMillis = 0;
+    }
+    if (command.hasThresholds)
+    {
+      changed = changed || autoSettings.lowTemp != command.lowTemp || autoSettings.medTemp != command.medTemp ||
+        autoSettings.highTemp != command.highTemp || autoSettings.humidityBoost != command.humidityBoost;
+      autoSettings.lowTemp = command.lowTemp;
+      autoSettings.medTemp = command.medTemp;
+      autoSettings.highTemp = command.highTemp;
+      autoSettings.humidityBoost = command.humidityBoost;
+    }
+    autoPreviousMillis = 0;
+    unlockState();
+    clearCustomTimer();
+    if (changed)
+    {
+      saveAutoSettings();
+    }
+    Serial.println("Auto ajustes aplicados: " + getAutoSettingsJson());
+    return;
+  }
+
+  if (command.type == LogicCommandType::RfSettings)
+  {
+    lockState();
+    bool changed = rfSettings.defaultRepeat != command.rfDefault || rfSettings.lowRepeat != command.rfLow ||
+      rfSettings.medRepeat != command.rfMed || rfSettings.highRepeat != command.rfHigh || rfSettings.offRepeat != command.rfOff;
+    rfSettings.defaultRepeat = command.rfDefault;
+    rfSettings.lowRepeat = command.rfLow;
+    rfSettings.medRepeat = command.rfMed;
+    rfSettings.highRepeat = command.rfHigh;
+    rfSettings.offRepeat = command.rfOff;
+    unlockState();
+    if (changed)
+    {
+      saveRfSettings();
+    }
+    Serial.println("RF ajustes aplicados: " + getRfSettingsJson());
+  }
+}
+
+void processLogicCommands()
+{
+  LogicCommand command = {};
+  if (logicCommandQueue != nullptr && xQueueReceive(logicCommandQueue, &command, 0) == pdTRUE)
+  {
+    if (command.type == LogicCommandType::Fan && strcmp(command.mode, "luz") != 0)
+    {
+      LogicCommand nextCommand = {};
+      while (xQueuePeek(logicCommandQueue, &nextCommand, 0) == pdTRUE &&
+             nextCommand.type == LogicCommandType::Fan && strcmp(nextCommand.mode, "luz") != 0)
+      {
+        xQueueReceive(logicCommandQueue, &command, 0);
+      }
+    }
+    processLogicCommand(command);
+  }
 }
 
 void setup() {
+  stateMutex = xSemaphoreCreateMutex();
   rtc.setTime(1,30,45,26,5,1999);
   loadAutoSettings();
+  loadWifiSettings();
   dht.setup(DHTPIN,DHTTYPE);
   t = dht.getTemperature() + dht_cal;
   h = dht.getHumidity();
   Serial.begin(115200);
   Serial.println("\nFan Control v0.2\n");
+  logicCommandQueue = xQueueCreate(LOGIC_QUEUE_LENGTH, sizeof(LogicCommand));
+  if (logicCommandQueue == nullptr)
+  {
+    Serial.println("No se pudo crear la cola de logica");
+  }
+  if (stateMutex == nullptr)
+  {
+    Serial.println("No se pudo crear el mutex de estado");
+  }
+  Serial.printf("Logica Arduino en nucleo %d\n", xPortGetCoreID());
   // Transmitter is connected to Arduino Pin #10  
   mySwitch.enableTransmit(18);
   /*  RF CODES
@@ -681,50 +1635,214 @@ void setup() {
     return;
   }
 
-  Serial.println("\nIniciando WIFI");
-  
-  if (!WiFi.config(local_IP, gateway, subnet, dns)) {
-    Serial.println("STA Failed to configure");
-  }
-
-  //wifimulti.addAP(ssid1,password1);
-  //wifimulti.addAP(ssid2,password2);
-  wifimulti.addAP(ssid3,password3);
-
-
-
-  WiFi.mode(WIFI_STA);
-  Serial.print("Conectando a Wifi ..");
-  while (wifimulti.run(TiempoEsperaWifi) != WL_CONNECTED) {
-    Serial.print(".");
-  }
-  Serial.println(".. Conectado");
-  Serial.print("SSID:");
-  Serial.print(WiFi.SSID());
-  Serial.print(" ID:");
-  Serial.println(WiFi.localIP());
-
-  if (!MDNS.begin("fancontrol")) {
-    Serial.println("Error configurando mDNS!");
-    while (1) {
-      delay(1000);
-      ESP.restart();
-    }
-  }
-  Serial.println("mDNS configurado");
-
-  Serial.println("HTTP server started");  
+  Serial.println("\nIniciando WiFi");
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
+  refreshWifiScanCache();
+  startWifiConnectionCycle();
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(LittleFS, "/index.html", String(), false, processor);
+    if (isWifiPortalRequest(request))
+    {
+      request->redirect("/wifi");
+      return;
+    }
+    request->send(LittleFS, "/index.html", "text/html");
   });
 
+  server.on("/wifi", HTTP_GET, [](AsyncWebServerRequest *request){
+    int8_t editIndex = -1;
+    if (request->hasParam("profile"))
+    {
+      int8_t candidate = -1;
+      if (parseWifiProfileIndex(request->getParam("profile")->value(), candidate) && isWifiProfileUsed(candidate))
+      {
+        editIndex = candidate;
+      }
+    }
+    request->send(LittleFS, "/wifi.html", String(), false, [editIndex](const String &var) {
+      return wifiPageProcessor(var, editIndex);
+    });
+  });
+
+  server.on("/wifi/status", HTTP_GET, [](AsyncWebServerRequest *request){
+    AsyncWebServerResponse *response = request->beginResponse(200, "application/json", getWifiStatusJson());
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on("/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request){
+    lockState();
+    String scanJson = wifiScanJson;
+    unlockState();
+    AsyncWebServerResponse *response = request->beginResponse(200, "application/json", scanJson);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on("/wifi/scan/start", HTTP_POST, [](AsyncWebServerRequest *request){
+    wifiScanRequested = true;
+    sendWifiResultPage(request, "Buscando redes", "El escaneo puede pausar brevemente el portal. La lista se actualizara al terminar.", true);
+  });
+
+  server.on("/wifi/save", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!request->hasParam("password", true) || !request->hasParam("mode", true))
+    {
+      sendWifiResultPage(request, "Datos incompletos", "Faltan datos de red.", false);
+      return;
+    }
+
+    String ssid = request->hasParam("ssid", true) ? request->getParam("ssid", true)->value() : "";
+    String selectedSsid = request->hasParam("ssid_select", true) ? request->getParam("ssid_select", true)->value() : "";
+    String password = request->getParam("password", true)->value();
+    String mode = request->getParam("mode", true)->value();
+    int8_t editIndex = -1;
+    if (request->hasParam("profile", true))
+    {
+      int8_t candidate = -1;
+      if (parseWifiProfileIndex(request->getParam("profile", true)->value(), candidate) && isWifiProfileUsed(candidate))
+      {
+        editIndex = candidate;
+      }
+    }
+    ssid.trim();
+    selectedSsid.trim();
+    if (!selectedSsid.isEmpty())
+    {
+      ssid = selectedSsid;
+    }
+
+    if (ssid.isEmpty() || ssid.length() > 32 || (password.length() > 0 && (password.length() < 8 || password.length() > 63)))
+    {
+      sendWifiResultPage(request, "Datos no validos", "Revisa el SSID y la contrasena.", false);
+      return;
+    }
+    if (mode != "dhcp" && mode != "static")
+    {
+      sendWifiResultPage(request, "Datos no validos", "El modo de asignacion IP no es valido.", false);
+      return;
+    }
+
+    WifiSettings newSettings;
+    newSettings.configured = true;
+    newSettings.dhcp = mode == "dhcp";
+    newSettings.ssid = ssid;
+
+    int8_t duplicateIndex = findWifiProfileBySsid(ssid);
+    if (duplicateIndex >= 0 && editIndex >= 0 && duplicateIndex != editIndex)
+    {
+      sendWifiResultPage(request, "Red duplicada", "Ya existe otro perfil con ese SSID.", false);
+      return;
+    }
+
+    int8_t targetIndex = editIndex >= 0 ? editIndex : duplicateIndex;
+    if (targetIndex < 0)
+    {
+      targetIndex = findFreeWifiProfile();
+    }
+    if (targetIndex < 0)
+    {
+      sendWifiResultPage(request, "Limite alcanzado", "Elimina una red antes de guardar otra.", false);
+      return;
+    }
+
+    if (password.isEmpty() && isWifiProfileUsed(targetIndex))
+    {
+      newSettings.password = getWifiProfilePassword(targetIndex);
+    }
+    else
+    {
+      newSettings.password = password;
+    }
+
+    if (!newSettings.dhcp)
+    {
+      if (!request->hasParam("ip", true) || !request->hasParam("gateway", true) ||
+          !request->hasParam("subnet", true) || !request->hasParam("dns", true) ||
+          !newSettings.localIp.fromString(request->getParam("ip", true)->value()) ||
+          !newSettings.gateway.fromString(request->getParam("gateway", true)->value()) ||
+          !newSettings.subnet.fromString(request->getParam("subnet", true)->value()) ||
+          !newSettings.dns.fromString(request->getParam("dns", true)->value()))
+      {
+        sendWifiResultPage(request, "Datos no validos", "Revisa la IP, puerta de enlace, mascara y DNS.", false);
+        return;
+      }
+    }
+
+    storeWifiProfile(targetIndex, newSettings);
+    saveWifiProfiles();
+    startWifiPortal();
+    pendingWifiProfile = targetIndex;
+    wifiApplyPending = true;
+    wifiApplyAt = millis();
+    sendWifiResultPage(request, "Conectando", "Configuracion guardada. Esperando una direccion IP...", true);
+  });
+
+  server.on("/wifi/profile/delete", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!request->hasParam("profile", true))
+    {
+      sendWifiResultPage(request, "Perfil no valido", "No se ha indicado la red que se debe eliminar.", false);
+      return;
+    }
+
+    int8_t index = -1;
+    if (!parseWifiProfileIndex(request->getParam("profile", true)->value(), index) || !isWifiProfileUsed(index))
+    {
+      sendWifiResultPage(request, "Perfil no valido", "La red seleccionada no existe.", false);
+      return;
+    }
+
+    lockState();
+    bool deletingActiveProfile = activeWifiProfile == index;
+    memset(&wifiStore.profiles[index], 0, sizeof(WifiProfileRecord));
+    if (wifiStore.lastSuccessful == index)
+    {
+      wifiStore.lastSuccessful = -1;
+    }
+    unlockState();
+    saveWifiProfiles();
+
+    if (deletingActiveProfile)
+    {
+      startWifiPortal();
+      pendingWifiProfile = -1;
+      wifiApplyPending = true;
+      wifiApplyAt = millis();
+    }
+    sendWifiResultPage(request, "Red eliminada", "El perfil WiFi se ha eliminado correctamente.", true);
+  });
+
+  server.on("/wifi/finish", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (WiFi.status() != WL_CONNECTED)
+    {
+      sendWifiResultPage(request, "Conexion pendiente", "El ESP32 aun no ha obtenido una direccion IP.", true);
+      return;
+    }
+    wifiFinishPending = true;
+    wifiFinishAt = millis();
+    sendWifiResultPage(request, "Configuracion finalizada", "El punto de acceso se cerrara. Usa la IP mostrada para volver a entrar.", false);
+  });
+
+  server.on("/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request){
+    wifiResetPending = true;
+    wifiResetAt = millis();
+    request->send(200, "application/json", "{\"reset\":true}");
+  });
+
+  const char *captivePortalPaths[] = {"/generate_204", "/hotspot-detect.html", "/connecttest.txt", "/ncsi.txt"};
+  for (const char *path : captivePortalPaths)
+  {
+    server.on(path, HTTP_GET, [](AsyncWebServerRequest *request){
+      request->redirect("http://192.168.4.1/wifi");
+    });
+  }
+
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(LittleFS, "/config.html", String(), false, processor);
+    request->send(LittleFS, "/config.html", "text/html");
   });
 
   server.on("/config.html", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(LittleFS, "/config.html", String(), false, processor);
+    request->send(LittleFS, "/config.html", "text/html");
   });
 
   server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -735,43 +1853,81 @@ void setup() {
     request->send(LittleFS, "/app.js", "application/javascript");
   });
 
+  server.on("/wifi.js", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(LittleFS, "/wifi.js", "application/javascript");
+  });
+
   server.on("/localtime", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", local_time);
+    lockState();
+    String value = local_time;
+    unlockState();
+    request->send(200, "text/plain", value);
   });
 
   server.on("/localdate", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", local_date);
+    lockState();
+    String value = local_date;
+    unlockState();
+    request->send(200, "text/plain", value);
   });
 
   server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", String(t));
+    lockState();
+    float value = t;
+    unlockState();
+    request->send(200, "text/plain", String(value));
   });
   
   server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", String(h));
+    lockState();
+    float value = h;
+    unlockState();
+    request->send(200, "text/plain", String(value));
+  });
+
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response = request->beginResponse(200, "application/json", getDashboardStatusJson());
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on("/system/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    UBaseType_t queuedCommands = logicCommandQueue != nullptr ? uxQueueMessagesWaiting(logicCommandQueue) : 0;
+    TaskHandle_t asyncTask = xTaskGetHandle("async_tcp");
+    TaskHandle_t logicTask = xTaskGetHandle("loopTask");
+    UBaseType_t asyncStackFree = asyncTask != nullptr ? uxTaskGetStackHighWaterMark(asyncTask) : 0;
+    UBaseType_t logicStackFree = logicTask != nullptr ? uxTaskGetStackHighWaterMark(logicTask) : 0;
+    String json = "{\"webCore\":" + String(xPortGetCoreID());
+    json += ",\"logicCore\":" + String(ARDUINO_RUNNING_CORE);
+    json += ",\"queuedCommands\":" + String(queuedCommands);
+    json += ",\"queueCapacity\":" + String(LOGIC_QUEUE_LENGTH);
+    json += ",\"asyncStackFree\":" + String(asyncStackFree);
+    json += ",\"logicStackFree\":" + String(logicStackFree);
+    json += ",\"freeHeap\":" + String(ESP.getFreeHeap()) + "}";
+    request->send(200, "application/json", json);
   });
 
   server.on("/botones", HTTP_GET, [] (AsyncWebServerRequest *request) {
-      String inputMessage1;
-      if (request->hasParam(PARAM_INPUT_1)) {
-        inputMessage1 = request->getParam(PARAM_INPUT_1)->value();
-        if (!sendFanMode(inputMessage1))
-        {
-          request->send(400, "text/plain", "Invalid button");
-          return;
-        }
-
-        if (isFanControlCommand(inputMessage1))
-        {
-          clearCustomTimer();
-          setAutoModeEnabled(false);
-        }
-      }
-      else {
+      if (!request->hasParam(PARAM_INPUT_1)) {
         request->send(400, "text/plain", "Missing button");
         return;
       }
-      Serial.println("Boton: " +String(inputMessage1));
+
+      String inputMessage1 = request->getParam(PARAM_INPUT_1)->value();
+      if (inputMessage1 != "luz" && !isFanControlCommand(inputMessage1))
+      {
+        request->send(400, "text/plain", "Invalid button");
+        return;
+      }
+
+      LogicCommand command = {};
+      command.type = LogicCommandType::Fan;
+      strlcpy(command.mode, inputMessage1.c_str(), sizeof(command.mode));
+      if (!enqueueLogicCommand(command))
+      {
+        request->send(503, "text/plain", "Logic queue full");
+        return;
+      }
       request->send(200, "text/plain", "OK");
     });
 
@@ -819,40 +1975,43 @@ void setup() {
       return;
     }
 
-    rfSettings.defaultRepeat = defaultRepeat;
-    rfSettings.lowRepeat = lowRepeat;
-    rfSettings.medRepeat = medRepeat;
-    rfSettings.highRepeat = highRepeat;
-    rfSettings.offRepeat = offRepeat;
-    saveRfSettings();
-
-    Serial.println("RF ajustes: " + getRfSettingsJson());
-    request->send(200, "application/json", getRfSettingsJson());
+    LogicCommand command = {};
+    command.type = LogicCommandType::RfSettings;
+    command.rfDefault = defaultRepeat;
+    command.rfLow = lowRepeat;
+    command.rfMed = medRepeat;
+    command.rfHigh = highRepeat;
+    command.rfOff = offRepeat;
+    if (!enqueueLogicCommand(command))
+    {
+      request->send(503, "text/plain", "Logic queue full");
+      return;
+    }
+    request->send(200, "application/json", "{\"queued\":true}");
   });
 
   server.on("/auto", HTTP_GET, [] (AsyncWebServerRequest *request) {
     bool updated = false;
+    LogicCommand command = {};
+    command.type = LogicCommandType::AutoSettings;
 
     if (request->hasParam(PARAM_AUTO_ENABLED))
     {
       String enabled = request->getParam(PARAM_AUTO_ENABLED)->value();
       if (enabled == "1" || enabled == "true")
       {
-        autoSettings.enabled = true;
-        autoFanMode = "";
-        autoPreviousMillis = 0;
-        autoLastChangeMillis = 0;
+        command.enabled = true;
       }
       else if (enabled == "0" || enabled == "false")
       {
-        autoSettings.enabled = false;
-        autoFanMode = "off";
+        command.enabled = false;
       }
       else
       {
         request->send(400, "text/plain", "Invalid enabled value");
         return;
       }
+      command.hasEnabled = true;
       updated = true;
     }
 
@@ -879,11 +2038,11 @@ void setup() {
         return;
       }
 
-      autoSettings.lowTemp = lowTemp;
-      autoSettings.medTemp = medTemp;
-      autoSettings.highTemp = highTemp;
-      autoSettings.humidityBoost = humidityBoost;
-      autoPreviousMillis = 0;
+      command.hasThresholds = true;
+      command.lowTemp = lowTemp;
+      command.medTemp = medTemp;
+      command.highTemp = highTemp;
+      command.humidityBoost = humidityBoost;
       updated = true;
     }
 
@@ -893,17 +2052,24 @@ void setup() {
       return;
     }
 
-    clearCustomTimer();
-    saveAutoSettings();
-    Serial.println("Auto ajustes: " + getAutoSettingsJson());
-    request->send(200, "application/json", getAutoSettingsJson());
+    if (!enqueueLogicCommand(command))
+    {
+      request->send(503, "text/plain", "Logic queue full");
+      return;
+    }
+    request->send(200, "application/json", "{\"queued\":true}");
   });
 
   server.on("/temporizador", HTTP_GET, [] (AsyncWebServerRequest *request) {
     if (request->hasParam("cancel"))
     {
-      clearCustomTimer();
-      Serial.println("Temporizador cancelado");
+      LogicCommand command = {};
+      command.type = LogicCommandType::TimerCancel;
+      if (!enqueueLogicCommand(command))
+      {
+        request->send(503, "text/plain", "Logic queue full");
+        return;
+      }
       request->send(200, "text/plain", "Timer cancelled");
       return;
     }
@@ -955,48 +2121,40 @@ void setup() {
       return;
     }
 
-    if (!sendFanMode(mode))
+    LogicCommand command = {};
+    command.type = LogicCommandType::TimerStart;
+    command.durationMillis = durationMillis;
+    strlcpy(command.mode, mode.c_str(), sizeof(command.mode));
+    if (!enqueueLogicCommand(command))
     {
-      request->send(500, "text/plain", "Could not start fan");
+      request->send(503, "text/plain", "Logic queue full");
       return;
     }
-
-    customTimer.active = true;
-    customTimer.mode = mode;
-    customTimer.startMillis = millis();
-    customTimer.durationMillis = durationMillis;
-    setAutoModeEnabled(false);
-
-    Serial.println("Temporizador: modo " + mode + " durante " + durationText);
-    request->send(200, "application/json", getTimerStatus());
+    request->send(200, "application/json", "{\"queued\":true}");
   });
 
   AsyncElegantOTA.begin(&server);
-
-  MDNS.addService("http", "tcp", 80);
-
-  
+  server.onNotFound([](AsyncWebServerRequest *request){
+    if (isWifiPortalRequest(request))
+    {
+      request->redirect("http://192.168.4.1/wifi");
+      return;
+    }
+    request->send(404, "text/plain", "Not found");
+  });
   server.begin();
+  Serial.println("Servidor HTTP iniciado");
 
-  configTime(gmtOffset_sec, dayligthOffset_sec, ntpServer1, ntpServer2, ntpServer3);
-  struct tm timeInfo;
-  
-  if (getLocalTime(&timeInfo))
-  {
-    Serial.println(&timeInfo, "%A, %B %d %Y %H:%M:%S");
-    rtc.setTimeStruct(timeInfo);
-  }
-  else{
-    Serial.println("Failed to obtain actual date");
-  }
-
-
+  configTzTime(timezone, ntpServer1, ntpServer2, ntpServer3);
   local_time = rtc.getTime("%H:%M");
   local_date = rtc.getTime("%d/%m/%Y");
 }
 
 void loop() {
   unsigned long currentMillis = millis();
+
+  handleWifi(currentMillis);
+  processLogicCommands();
 
   if (customTimer.active && currentMillis - customTimer.startMillis >= customTimer.durationMillis)
   {
@@ -1022,7 +2180,9 @@ void loop() {
     }
     else
     {
+      lockState();
       t = newT;
+      unlockState();
       Serial.println("Temperatura: "+String(t));
     }
     // Read Humidity
@@ -1034,7 +2194,9 @@ void loop() {
     }
     else
     {
+      lockState();
       h = newH;
+      unlockState();
       Serial.println("Humedad: "+String(h));
     }
   }
@@ -1042,36 +2204,13 @@ void loop() {
   if (currentMillis - timepreviousMillis >= timeinterval)
   {
     timepreviousMillis = currentMillis;
+    lockState();
     local_time = rtc.getTime("%H:%M");
     local_date = rtc.getTime("%d/%m/%Y");
+    unlockState();
   }
 
-  if (currentMillis - wifiMillis >= wifiinterval)
-  {
-    wifiMillis = currentMillis;
-    if(wifimulti.run(TiempoEsperaWifi) != WL_CONNECTED)
-    {
-      Serial.println("Conexion perdida");
-      Serial.print("Conectando a Wifi ..");
-      while (wifimulti.run(TiempoEsperaWifi) != WL_CONNECTED) {
-        Serial.print(".");
-      }
-      Serial.println(".. Conectado");
-      Serial.print("SSID:");
-      Serial.print(WiFi.SSID());
-      Serial.print(" ID:");
-      Serial.println(WiFi.localIP());
+  flushPendingSettings(currentMillis);
 
-      if (!MDNS.begin("fancontrol")) {
-        Serial.println("Error configurando mDNS!");
-        delay(1000);
-        ESP.restart();
-      }
-      Serial.println("mDNS configurado");
-
-      Serial.println("HTTP server started");  
-
-    }
-  }
-  delay(500);
+  delay(25);
 }

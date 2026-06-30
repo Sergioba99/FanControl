@@ -5,7 +5,7 @@
   <title>ROOM CONTROL - CONFIG</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
-  <link rel="stylesheet" type="text/css" href="style.css?v=5">
+  <link rel="stylesheet" type="text/css" href="style.css?v=11">
 </head>
 <body>
     <div class="header">
@@ -19,6 +19,24 @@
             <a class="update-button nav-link" href="/">Volver al control</a>
             <input id="update-button" class="update-button" type="button" value="Actualizar firmware">
           </div>
+        </div>
+
+        <div class="config-section">
+          <div class="section-heading">
+            <h4>Red</h4>
+            <a class="update-button nav-link" href="/wifi">Configurar WiFi</a>
+          </div>
+          <dl class="network-details">
+            <div><dt>SSID</dt><dd id="network-ssid">--</dd></div>
+            <div><dt>Direccion IP</dt><dd id="network-ip">--</dd></div>
+            <div><dt>Asignacion</dt><dd id="network-mode">--</dd></div>
+            <div><dt>Senal</dt><dd id="network-rssi">--</dd></div>
+            <div><dt>Redes guardadas</dt><dd id="network-profile-count">--</dd></div>
+          </dl>
+          <div class="form-actions">
+            <button id="reset-wifi-button" class="update-button danger-button" type="button">Borrar todas las redes</button>
+          </div>
+          <p id="network-message" class="form-message" aria-live="polite"></p>
         </div>
 
         <div class="config-section">
@@ -90,6 +108,6 @@
         </div>
       </div>
     </div>
-  <script src="app.js?v=14"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>

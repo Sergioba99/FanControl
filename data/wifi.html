@@ -1,0 +1,95 @@
+<!DOCTYPE HTML>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Fan Control - WiFi</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" type="text/css" href="style.css?v=11">
+</head>
+<body>
+  <div class="header">
+    <h2 class="header">FAN CONTROL</h2>
+  </div>
+  <main class="config-page">
+    <div class="base config-panel wifi-panel">
+      <div class="config-title">
+        <h4>Configuracion WiFi</h4>
+        <a class="update-button nav-link" href="/config">Volver</a>
+      </div>
+
+      <section class="config-section">
+        <div class="section-heading">
+          <h4>Redes guardadas</h4>
+          <span class="profile-counter">%WIFI_PROFILE_COUNT%</span>
+        </div>
+        %WIFI_SAVED_PROFILES%
+      </section>
+
+      <section class="config-section">
+        <div class="section-heading">
+          <h4>%WIFI_FORM_TITLE%</h4>
+          <a class="update-button nav-link secondary-button" href="/wifi">Nueva red</a>
+        </div>
+        <form id="wifi-form" class="auto-settings-form" method="post" action="/wifi/save">
+          <input type="hidden" name="profile" value="%WIFI_PROFILE_INDEX%">
+          <div class="wifi-form-grid">
+            <label id="wifi-network-picker" class="wifi-field" for="wifi-network-select">
+              <span>Redes detectadas</span>
+              <select id="wifi-network-select" name="ssid_select">
+                %WIFI_NETWORK_OPTIONS%
+              </select>
+            </label>
+            <label class="wifi-field" for="wifi-ssid">
+              <span>Nombre de red o SSID oculto</span>
+              <input id="wifi-ssid" name="ssid" type="text" list="wifi-networks" maxlength="32" autocomplete="off" value="%WIFI_SSID%">
+              <datalist id="wifi-networks"></datalist>
+            </label>
+            <label class="wifi-field" for="wifi-password">
+              <span>Contrasena</span>
+              <input id="wifi-password" name="password" type="password" maxlength="63" autocomplete="new-password" placeholder="Sin cambios si se deja vacia">
+            </label>
+          </div>
+          <fieldset class="ip-mode-fieldset">
+            <legend>Asignacion de IP</legend>
+            <div class="segmented-control">
+              <label><input type="radio" name="mode" value="dhcp" %WIFI_DHCP_CHECKED%><span>DHCP</span></label>
+              <label><input type="radio" name="mode" value="static" %WIFI_STATIC_CHECKED%><span>IP estatica</span></label>
+            </div>
+          </fieldset>
+
+          <div id="static-ip-fields" class="wifi-form-grid" hidden>
+            <label class="wifi-field" for="wifi-ip"><span>Direccion IP</span><input id="wifi-ip" name="ip" type="text" inputmode="decimal" value="%WIFI_IP%" placeholder="192.168.1.148"></label>
+            <label class="wifi-field" for="wifi-gateway"><span>Puerta de enlace</span><input id="wifi-gateway" name="gateway" type="text" inputmode="decimal" value="%WIFI_GATEWAY%" placeholder="192.168.1.1"></label>
+            <label class="wifi-field" for="wifi-subnet"><span>Mascara</span><input id="wifi-subnet" name="subnet" type="text" inputmode="decimal" value="%WIFI_SUBNET%"></label>
+            <label class="wifi-field" for="wifi-dns"><span>DNS</span><input id="wifi-dns" name="dns" type="text" inputmode="decimal" value="%WIFI_DNS%" placeholder="192.168.1.1"></label>
+          </div>
+
+          <div class="form-actions">
+            <button class="update-button" type="submit" %WIFI_SAVE_DISABLED%>Guardar y conectar</button>
+          </div>
+        </form>
+        <form class="form-actions" method="post" action="/wifi/scan/start">
+          <button class="update-button secondary-button" type="submit">Actualizar redes</button>
+        </form>
+      </section>
+
+      <section class="config-section network-result">
+        <h4>Estado</h4>
+        <dl class="network-details">
+          <div><dt>Conexion</dt><dd id="wifi-connection">%WIFI_CONNECTION%</dd></div>
+          <div><dt>Direccion IP</dt><dd id="wifi-current-ip">%WIFI_CURRENT_IP%</dd></div>
+          <div><dt>Acceso local</dt><dd>fancontrol.local</dd></div>
+        </dl>
+        <p id="wifi-message" class="form-message" aria-live="polite"></p>
+        <div class="form-actions">
+          <a class="update-button nav-link secondary-button" href="/wifi">Actualizar estado</a>
+          <form method="post" action="/wifi/finish">
+            <button id="finish-wifi-button" class="update-button" type="submit" %WIFI_FINISH_HIDDEN%>Finalizar</button>
+          </form>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="wifi.js?v=5"></script>
+</body>
+</html>

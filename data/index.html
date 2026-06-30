@@ -5,7 +5,7 @@
   <title>ROOM CONTROL</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
-  <link rel="stylesheet" type="text/css" href="style.css?v=3">
+  <link rel="stylesheet" type="text/css" href="style.css?v=11">
 </head>
 <body>
     <div class="header">
@@ -14,40 +14,48 @@
     <div class="contenedor">
       <div></div>
       <div class="izquierda">
-        <h4>Configuracion</h4>
-        <a class="update-button nav-link" href="/config">Configuracion</a>
         <div class="temporizador_personalizado" style="align-items:center;">  
           <h4>Temporizador personalizado</h4>
             <form id="timer-form" class="form_temp">
-              <div style="justify-content: center;">
-                <table style="justify-content: center;">
-                  <tr>
-                    <th class="temp_header">Duracion</th>
-                    <th class="temp_header">Modo</th>
-                  </tr>
-                  <tr>
-                    <td class="temp_time">
-                      <label for="timer-hours">Horas</label>
-                      <input id="timer-hours" class="timer-input" type="text" name="hours" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="0" required>
-                      <label for="timer-minutes">Minutos</label>
-                      <input id="timer-minutes" class="timer-input" type="text" name="minutes" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="30" required>
-                    </td>
-                    <td class="temp_mode">
-                      <input type="radio" name="mode" value="low" checked>
-                      <label>LOW</label><br>
-                      <input type="radio" name="mode" value="med">
-                      <label>MED</label><br>
-                      <input type="radio" name="mode" value="high">
-                      <label>HIGH</label><br>
-                    </td>
-                  </tr>
-                  
-                </table>
+              <div class="timer-editor">
+                <fieldset class="timer-group">
+                  <legend>Duracion</legend>
+                  <div class="timer-duration-fields">
+                    <label class="timer-number-field" for="timer-hours">
+                      <span>Horas</span>
+                      <span class="timer-input-wrap">
+                        <input id="timer-hours" class="timer-input" type="text" name="hours" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="0" required>
+                        <span class="timer-unit">h</span>
+                      </span>
+                    </label>
+                    <span class="timer-separator" aria-hidden="true">:</span>
+                    <label class="timer-number-field" for="timer-minutes">
+                      <span>Minutos</span>
+                      <span class="timer-input-wrap">
+                        <input id="timer-minutes" class="timer-input" type="text" name="minutes" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="30" required>
+                        <span class="timer-unit">min</span>
+                      </span>
+                    </label>
+                  </div>
+                </fieldset>
+
+                <fieldset class="timer-group">
+                  <legend>Modo</legend>
+                  <div class="timer-mode-options">
+                    <label><input type="radio" name="mode" value="low" checked><span>LOW</span></label>
+                    <label><input type="radio" name="mode" value="med"><span>MED</span></label>
+                    <label><input type="radio" name="mode" value="high"><span>HIGH</span></label>
+                  </div>
+                </fieldset>
               </div>
-              <input type="submit" value="Enviar">
-              <input id="cancel-timer-button" type="button" value="Cancelar">
+              <div class="timer-actions">
+                <input class="button" type="submit" value="Enviar">
+                <input id="cancel-timer-button" class="button" type="button" value="Cancelar">
+              </div>
             </form>
         </div>
+        <h4>Configuracion</h4>
+        <a class="update-button nav-link" href="/config">Configuracion</a>
       </div>
 
       <div class="base">
@@ -127,6 +135,6 @@
         </div>
       </div>
     </div>
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>

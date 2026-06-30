@@ -1,25 +1,14 @@
-function getText(endpoint, elementId) {
-  var element = document.getElementById(elementId);
-  if (!element) {
-    return;
-  }
-
-  var xhttp = new XMLHttpRequest();
-  xhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      element.innerHTML = this.responseText;
-    }
-  };
-  xhttp.open("GET", endpoint, true);
-  xhttp.send();
-}
-
 function openUpdatePage() {
   window.location.href = window.location.origin + "/update";
 }
 
 function toggleCheckboxButton(button) {
   var xhr = new XMLHttpRequest();
+  xhr.onreadystatechange = function() {
+    if (this.readyState === 4 && this.status === 200) {
+      refreshTimerStateAfterCommand();
+    }
+  };
   xhr.open("GET", "/botones?button=" + encodeURIComponent(button.id), true);
   xhr.send();
 }
@@ -36,6 +25,93 @@ function setAutoStatusText(text) {
   if (element) {
     element.innerHTML = text;
   }
+}
+
+var dashboardTimerDeadline = 0;
+var dashboardTimerMode = "";
+
+function formatRemainingTime(seconds) {
+  var totalMinutes = Math.ceil(Math.max(0, seconds) / 60);
+  var hours = Math.floor(totalMinutes / 60);
+  var minutes = totalMinutes % 60;
+  return (hours < 10 ? "0" : "") + hours + ":" + (minutes < 10 ? "0" : "") + minutes;
+}
+
+function applyTimerStatus(status) {
+  if (!status.active) {
+    dashboardTimerDeadline = 0;
+    dashboardTimerMode = "";
+    setTimerStatusText("Sin temporizador activo");
+    return;
+  }
+
+  dashboardTimerMode = status.mode || "";
+  if (typeof status.remainingSeconds === "number") {
+    dashboardTimerDeadline = Date.now() + status.remainingSeconds * 1000;
+  }
+  renderDashboardTimer();
+}
+
+function renderDashboardTimer() {
+  if (!dashboardTimerDeadline || !document.getElementById("timer_status")) {
+    return;
+  }
+  var remainingSeconds = Math.ceil((dashboardTimerDeadline - Date.now()) / 1000);
+  if (remainingSeconds <= 0) {
+    dashboardTimerDeadline = 0;
+    setTimerStatusText("Finalizando temporizador...");
+    window.setTimeout(updateDashboardStatus, 500);
+    return;
+  }
+  setTimerStatusText("Activo: " + dashboardTimerMode.toUpperCase() + " - restante " + formatRemainingTime(remainingSeconds));
+}
+
+function applyAutoStatus(status) {
+  var checkbox = document.getElementById("auto-enabled");
+  if (checkbox && checkbox.type === "checkbox") {
+    checkbox.checked = status.enabled;
+    updateAutoToggleLabel();
+  }
+  if (status.enabled) {
+    var autoMode = status.autoMode ? status.autoMode.toUpperCase() : "PENDIENTE";
+    setAutoStatusText("Auto activo: " + autoMode);
+  } else {
+    setAutoStatusText("Auto desactivado");
+  }
+}
+
+function updateDashboardStatus() {
+  if (!document.getElementById("local_time") && !document.getElementById("timer_status")) {
+    return;
+  }
+
+  var xhr = new XMLHttpRequest();
+  xhr.onreadystatechange = function() {
+    if (this.readyState !== 4 || this.status !== 200) {
+      return;
+    }
+    try {
+      var status = JSON.parse(this.responseText);
+      document.getElementById("local_time").textContent = status.time;
+      document.getElementById("local_date").textContent = status.date;
+      document.getElementById("temperature").textContent = status.temperature === null ? "--" : status.temperature;
+      document.getElementById("humidity").textContent = status.humidity === null ? "--" : status.humidity;
+      applyTimerStatus(status.timer);
+      applyAutoStatus(status.auto);
+    } catch (error) {
+      setTimerStatusText("Estado del sistema no disponible");
+    }
+  };
+  xhr.open("GET", "/api/status?t=" + Date.now(), true);
+  xhr.send();
+}
+
+function refreshTimerStateAfterCommand() {
+  window.setTimeout(updateTimerStatus, 250);
+  window.setTimeout(function() {
+    updateTimerStatus();
+    updateDashboardStatus();
+  }, 1500);
 }
 
 function updateAutoToggleLabel() {
@@ -76,7 +152,7 @@ function sendTimerForm(form) {
   xhr.onreadystatechange = function() {
     if (this.readyState == 4) {
       if (this.status == 200) {
-        updateTimerStatus();
+        refreshTimerStateAfterCommand();
       } else {
         setTimerStatusText("No se pudo programar el temporizador (HTTP " + this.status + ")");
       }
@@ -91,8 +167,8 @@ function sendTimerForm(form) {
 function cancelTimer() {
   var xhr = new XMLHttpRequest();
   xhr.onreadystatechange = function() {
-    if (this.readyState == 4) {
-      updateTimerStatus();
+    if (this.readyState == 4 && this.status == 200) {
+      refreshTimerStateAfterCommand();
     }
   };
   xhr.open("GET", "/temporizador?cancel=1", true);
@@ -117,9 +193,9 @@ function updateTimerStatus() {
         }
 
         if (status.active) {
-          setTimerStatusText("Activo: " + status.mode.toUpperCase() + " - restante " + status.remaining);
+          applyTimerStatus(status);
         } else {
-          setTimerStatusText("Sin temporizador activo");
+          applyTimerStatus(status);
         }
       } else {
         setTimerStatusText("Estado del temporizador no disponible (HTTP " + this.status + ")");
@@ -164,12 +240,7 @@ function updateAutoStatus() {
           }
         }
 
-        if (status.enabled) {
-          var autoMode = status.autoMode ? status.autoMode.toUpperCase() : "PENDIENTE";
-          setAutoStatusText("Auto activo: " + autoMode + " - ventilador " + status.currentMode.toUpperCase());
-        } else {
-          setAutoStatusText("Auto desactivado");
-        }
+        applyAutoStatus(status);
       } else {
         setAutoStatusText("Auto no disponible (HTTP " + this.status + ")");
       }
@@ -231,8 +302,8 @@ function sendAutoForm(form) {
   xhr.onreadystatechange = function() {
     if (this.readyState == 4) {
       if (this.status == 200) {
-        updateAutoStatus();
-        updateTimerStatus();
+        window.setTimeout(updateAutoStatus, 200);
+        refreshTimerStateAfterCommand();
       } else {
         setAutoStatusText("No se pudo guardar auto (HTTP " + this.status + ")");
       }
@@ -269,7 +340,7 @@ function sendRfForm(form) {
   var xhr = new XMLHttpRequest();
   xhr.onreadystatechange = function() {
     if (this.readyState == 4 && this.status == 200) {
-      updateRfStatus();
+      window.setTimeout(updateRfStatus, 200);
     }
   };
   xhr.open("GET", "/rf?default=" + encodeURIComponent(defaultRepeat) +
@@ -280,14 +351,65 @@ function sendRfForm(form) {
   xhr.send();
 }
 
+function updateNetworkStatus() {
+  if (!document.getElementById("network-ip")) {
+    return;
+  }
+
+  var xhr = new XMLHttpRequest();
+  xhr.onreadystatechange = function() {
+    if (this.readyState !== 4) {
+      return;
+    }
+    if (this.status !== 200) {
+      document.getElementById("network-message").textContent = "Estado de red no disponible";
+      return;
+    }
+
+    try {
+      var status = JSON.parse(this.responseText);
+      document.getElementById("network-ssid").textContent = status.ssid || "Sin configurar";
+      document.getElementById("network-ip").textContent = status.ip || "Sin conexion";
+      document.getElementById("network-mode").textContent = status.mode === "static" ? "IP estatica" : "DHCP";
+      document.getElementById("network-rssi").textContent = status.connected ? status.rssi + " dBm" : "--";
+      document.getElementById("network-profile-count").textContent = status.profileCount + "/5";
+      document.getElementById("network-message").textContent = status.connected ? "Conectado" : "Sin conexion";
+    } catch (error) {
+      document.getElementById("network-message").textContent = "Respuesta de red no valida";
+    }
+  };
+  xhr.open("GET", "/wifi/status", true);
+  xhr.send();
+}
+
+function resetWifiSettings() {
+  if (!window.confirm("Se borraran todas las redes guardadas y se abrira FanControl-Setup.")) {
+    return;
+  }
+
+  var xhr = new XMLHttpRequest();
+  xhr.onreadystatechange = function() {
+    if (this.readyState === 4) {
+      var message = document.getElementById("network-message");
+      if (this.status === 200) {
+        message.textContent = "Redes borradas. Conectate a FanControl-Setup.";
+      } else {
+        message.textContent = "No se pudo borrar la configuracion WiFi.";
+      }
+    }
+  };
+  xhr.open("POST", "/wifi/reset", true);
+  xhr.send();
+}
+
 function setAutoEnabled(enabled) {
   var xhr = new XMLHttpRequest();
   setAutoStatusText("Guardando auto...");
   xhr.onreadystatechange = function() {
     if (this.readyState == 4) {
       if (this.status == 200) {
-        updateAutoStatus();
-        updateTimerStatus();
+        window.setTimeout(updateAutoStatus, 200);
+        refreshTimerStateAfterCommand();
       } else {
         setAutoStatusText("No se pudo cambiar auto (HTTP " + this.status + ")");
       }
@@ -332,6 +454,11 @@ function initApp() {
     });
   }
 
+  var resetWifiButton = document.getElementById("reset-wifi-button");
+  if (resetWifiButton) {
+    resetWifiButton.addEventListener("click", resetWifiSettings);
+  }
+
   var autoEnabled = document.getElementById("auto-enabled");
   if (autoEnabled) {
     autoEnabled.addEventListener("change", function() {
@@ -342,29 +469,22 @@ function initApp() {
     });
   }
 
-  getText("/localtime", "local_time");
-  getText("/localdate", "local_date");
-  getText("/temperature", "temperature");
-  getText("/humidity", "humidity");
-
-  setInterval(function() {
-    getText("/localtime", "local_time");
-  }, 2000);
-  setInterval(function() {
-    getText("/localdate", "local_date");
-  }, 2000);
-  setInterval(function() {
-    getText("/temperature", "temperature");
-  }, 2000);
-  setInterval(function() {
-    getText("/humidity", "humidity");
-  }, 2000);
-
-  updateTimerStatus();
-  updateAutoStatus();
-  updateRfStatus();
-  setInterval(updateTimerStatus, 1000);
-  setInterval(updateAutoStatus, 5000);
+  if (document.getElementById("local_time")) {
+    updateDashboardStatus();
+    setInterval(updateDashboardStatus, 10000);
+    setInterval(renderDashboardTimer, 1000);
+  }
+  if (autoForm) {
+    updateAutoStatus();
+    setInterval(updateAutoStatus, 5000);
+  }
+  if (rfForm) {
+    updateRfStatus();
+  }
+  if (document.getElementById("network-ip")) {
+    updateNetworkStatus();
+    setInterval(updateNetworkStatus, 5000);
+  }
 }
 
 if (document.readyState === "loading") {

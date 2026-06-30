@@ -47,40 +47,138 @@ th, tr {
 }
 
 .form_temp{
-    justify-content: center;
-    display: inline-block;
+    width: min(100%, 520px);
+    margin: 0 auto;
 }
 
-.temp_header{
-    width: 5vw;
+.timer-editor{
+    display: grid;
+    gap: 16px;
 }
 
-.temp_time{
-    width: 5vw; 
-    text-align: center;
+.timer-group{
+    min-width: 0;
+    margin: 0;
+    padding: 14px;
+    border: 1px solid #8d8d8d;
+    border-radius: 6px;
+    background-color: #c7c7c7;
 }
 
-.temp_time label{
-    display: block;
-    margin-top: 5px;
+.timer-group legend{
+    padding: 0 8px;
+    font-size: 1rem;
+    font-weight: bold;
+}
+
+.timer-duration-fields{
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: end;
+    gap: 10px;
+}
+
+.timer-number-field{
+    display: grid;
+    gap: 7px;
+    font-size: 0.9rem;
+    font-weight: bold;
+    text-align: left;
+}
+
+.timer-input-wrap{
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 48px;
+    overflow: hidden;
+    border: 2px solid #777;
+    border-radius: 5px;
+    background-color: #fff;
+}
+
+.timer-input-wrap:focus-within{
+    border-color: #2f4468;
+    box-shadow: 0 0 0 2px rgba(47, 68, 104, 0.2);
 }
 
 .timer-input{
-    width: 5vw;
-    min-width: 75px;
-    padding: 5px;
+    width: 100%;
+    min-width: 0;
+    padding: 9px;
+    border: 0;
+    outline: 0;
+    font-size: 1.25rem;
     text-align: center;
 }
 
-.temp_mode{
-    width: 5vw;
-    text-align: left;
+.timer-unit{
+    padding-right: 10px;
+    color: #555;
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+.timer-separator{
+    padding-bottom: 10px;
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.timer-mode-options{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    overflow: hidden;
+    border: 1px solid #2f4468;
+    border-radius: 5px;
+}
+
+.timer-mode-options label{
+    cursor: pointer;
+}
+
+.timer-mode-options input{
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.timer-mode-options span{
+    display: block;
+    padding: 12px 8px;
+    border-right: 1px solid #2f4468;
+    background-color: #eee;
+    font-size: 1rem;
+    font-weight: bold;
+    text-align: center;
+}
+
+.timer-mode-options label:last-child span{
+    border-right: 0;
+}
+
+.timer-mode-options input:checked + span{
+    color: #fff;
+    background-color: #2f4468;
+}
+
+.timer-mode-options input:focus-visible + span{
+    outline: 3px solid #059e8a;
+    outline-offset: -3px;
 }
 
 .timer_status{
     margin-top: 15px;
     font-size: 1vw;
     font-weight: bold;
+}
+
+.timer-actions{
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
 }
 
 .auto_control{
@@ -127,6 +225,11 @@ th, tr {
 }
 
 .update-button:hover {background-color: #1f2e45}
+.update-button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    box-shadow: none;
+}
 .update-button:active {
   background-color: #1f2e45;
   box-shadow: 0 4px #666;
@@ -241,6 +344,18 @@ th, tr {
     text-align: left;
 }
 
+.section-heading{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.section-heading h4{
+    margin: 0;
+}
+
 .auto-settings-form{
     display: block;
 }
@@ -281,6 +396,181 @@ th, tr {
 .config-status{
     padding-top: 15px;
     text-align: center;
+}
+
+.network-details{
+    margin: 0;
+}
+
+.network-details div{
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr);
+    gap: 15px;
+    padding: 10px 0;
+    border-bottom: 1px solid #ddd;
+}
+
+.network-details dt{
+    font-weight: bold;
+}
+
+.network-details dd{
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.profile-counter{
+    padding: 5px 9px;
+    color: #fff;
+    background-color: #59636f;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+.wifi-profile-list{
+    display: grid;
+    gap: 10px;
+}
+
+.wifi-profile-item{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background-color: #eee;
+}
+
+.wifi-profile-item > div:first-child{
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.wifi-profile-item span{
+    font-size: 0.9rem;
+    color: #555;
+}
+
+.wifi-profile-item .profile-active{
+    color: #047f70;
+    font-weight: bold;
+}
+
+.profile-actions{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.profile-actions form{
+    margin: 0;
+}
+
+.form-message{
+    min-height: 1.5em;
+    margin: 15px 0 0;
+    font-size: 1rem;
+    text-align: center;
+}
+
+.form-error{
+    color: #a31621;
+}
+
+.danger-button{
+    background-color: #9f2d35;
+}
+
+.danger-button:hover{
+    background-color: #7f2027;
+}
+
+.secondary-button{
+    margin-top: 15px;
+    background-color: #59636f;
+}
+
+.wifi-panel{
+    max-width: 700px;
+}
+
+.wifi-form-grid{
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 15px;
+}
+
+.wifi-form-grid[hidden]{
+    display: none;
+}
+
+.wifi-field{
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    font-size: 1rem;
+    font-weight: bold;
+}
+
+.wifi-field[hidden]{
+    display: none;
+}
+
+.wifi-field input,
+.wifi-field select{
+    width: 100%;
+    min-height: 42px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 4px;
+    font-size: 1rem;
+    background-color: #fff;
+}
+
+.ip-mode-fieldset{
+    margin: 22px 0;
+    padding: 0;
+    border: 0;
+}
+
+.ip-mode-fieldset legend{
+    margin-bottom: 10px;
+    font-weight: bold;
+}
+
+.segmented-control{
+    display: inline-flex;
+    border: 1px solid #2f4468;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.segmented-control label{
+    cursor: pointer;
+}
+
+.segmented-control input{
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.segmented-control span{
+    display: block;
+    min-width: 110px;
+    padding: 10px 14px;
+    text-align: center;
+}
+
+.segmented-control input:checked + span{
+    color: #fff;
+    background-color: #2f4468;
 }
 
 .switch {
@@ -378,27 +668,14 @@ input:checked+.slider:before {
     h4{
         font-size: 8vw;
     }
-    .temp_header{
-        width: 20vw;
-        font-size: 4vw;
+    .form_temp{
+        width: min(100%, 480px);
     }
-    
-    .temp_time{
-        width: 20vw; 
-        text-align: center;
-        font-size: 4vw;
+    .timer-group{
+        padding: 12px;
     }
-
     .timer-input{
-        width: 18vw;
-        min-width: 90px;
-        font-size: 4vw;
-    }
-    
-    .temp_mode{
-        width: 20vw;
-        text-align: left;
-        font-size: 4vw;
+        font-size: 1.25rem;
     }
     .timer_status{
         font-size: 4vw;
@@ -417,6 +694,9 @@ input:checked+.slider:before {
     .config-section h4{
         text-align: center;
     }
+    .section-heading{
+        flex-direction: column;
+    }
     .settings-grid{
         grid-template-columns: 1fr;
     }
@@ -426,6 +706,32 @@ input:checked+.slider:before {
     }
     .form-actions{
         justify-content: center;
+    }
+    .wifi-form-grid{
+        grid-template-columns: 1fr;
+    }
+    .network-details div{
+        grid-template-columns: 1fr;
+        gap: 4px;
+        text-align: left;
+    }
+    .wifi-profile-item{
+        align-items: stretch;
+        flex-direction: column;
+    }
+    .profile-actions{
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+    .segmented-control{
+        display: flex;
+    }
+    .segmented-control label{
+        flex: 1;
+    }
+    .segmented-control span{
+        min-width: 0;
+        font-size: 1rem;
     }
     .cell_icon{
         font-size: 5vw;

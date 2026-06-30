@@ -8,6 +8,8 @@ La web se sirve desde `LittleFS` y el ESP32 actua como cliente WiFi dentro de un
 
 - ESP32 con framework Arduino y PlatformIO.
 - Servidor web asyncrono en el propio microcontrolador.
+- Servidor AsyncTCP fijado al nucleo 0 y logica Arduino en el nucleo 1.
+- Cola FreeRTOS para desacoplar las peticiones web de RF, temporizadores y ajustes.
 - Interfaz web servida desde `LittleFS`.
 - JavaScript separado en `data/app.js`.
 - Pagina principal de control y pagina independiente de configuracion.
@@ -20,8 +22,12 @@ La web se sirve desde `LittleFS` y el ESP32 actua como cliente WiFi dentro de un
 - Repeticiones RF configurables por modo y persistentes.
 - Guardado del ultimo modo conocido del ventilador.
 - Sincronizacion de hora por NTP.
+- Cambio CET/CEST automatico para la zona horaria de Espana.
 - Resolucion local con mDNS usando `http://fancontrol.local`.
-- Reconexion automatica a WiFi si se pierde la red.
+- Portal cautivo para configurar WiFi sin recompilar el firmware.
+- Hasta cinco perfiles WiFi persistentes, editables y eliminables.
+- Eleccion entre DHCP e IP estatica.
+- Reconexion WiFi no bloqueante y portal de recuperacion si la red no esta disponible.
 
 ## Hardware esperado
 
@@ -40,12 +46,17 @@ La web se sirve desde `LittleFS` y el ESP32 actua como cliente WiFi dentro de un
 ```text
 .
 ├── src/
-│   └── main.cpp
+│   ├── fan_rf.h
+│   ├── logic_commands.h
+│   ├── main.cpp
+│   └── wifi_profiles.h
 ├── data/
 │   ├── app.js
 │   ├── config.html
 │   ├── index.html
-│   └── style.css
+│   ├── style.css
+│   ├── wifi.html
+│   └── wifi.js
 ├── platformio.ini
 ├── lib/
 ├── include/
@@ -66,6 +77,7 @@ La web se sirve desde `LittleFS` y el ESP32 actua como cliente WiFi dentro de un
 - `DHT sensor library for ESPx`
 - `ESP32Time`
 - `RCSwitch`
+- `DNSServer`
 - `LittleFS`
 - `Preferences`
 
@@ -94,6 +106,7 @@ Con ElegantOTA:
 
 - `/` muestra la pagina principal de control.
 - `/config` muestra la pagina de configuracion.
+- `/wifi` muestra el portal de configuracion de red.
 - `/update` abre la interfaz de actualizacion OTA.
 
 La pagina principal incluye:
@@ -108,9 +121,26 @@ La pagina principal incluye:
 
 La pagina de configuracion incluye:
 
+- Estado de red, IP actual, SSID, RSSI y modo de asignacion.
+- Acceso al portal WiFi, contador de perfiles y borrado de todas las redes guardadas.
 - Umbrales del control automatico.
 - Repeticiones RF por modo.
 - Acceso a la actualizacion OTA.
+
+## Configuracion WiFi
+
+En el primer arranque sin redes guardadas, el ESP32 crea el punto de acceso `FanControl-Setup` con la contrasena `fancontrol`. El portal cautivo se abre automaticamente; tambien se puede acceder mediante `http://192.168.4.1/wifi`.
+
+Antes de abrir el punto de acceso, el ESP32 escanea las redes cercanas y las muestra en el portal. El boton `Actualizar redes` permite lanzar posteriormente un escaneo asincrono manual; durante unos segundos el portal puede responder con mas latencia debido al cambio de canal. El formulario tambien permite escribir manualmente un SSID oculto y elegir entre:
+
+- `DHCP`: la red asigna automaticamente la direccion.
+- `IP estatica`: se configuran IP, puerta de enlace, mascara y DNS.
+
+Despues de guardar, el punto de acceso permanece activo y la pagina muestra la IP obtenida. El guardado, la lista de redes y la consulta manual del estado funcionan aunque el navegador cautivo no ejecute JavaScript. Al pulsar `Finalizar`, se cierra `FanControl-Setup`. El dispositivo queda accesible mediante la IP mostrada o `http://fancontrol.local`.
+
+Se pueden guardar hasta cinco perfiles. Cada uno conserva sus propias credenciales y configuracion DHCP/IP estatica. El portal permite crear perfiles, editarlos sin volver a mostrar la contrasena y eliminarlos individualmente. Al editar, una contrasena vacia conserva la existente.
+
+Durante el arranque se prueba primero la ultima red que funciono y despues el resto de perfiles guardados. Cada intento dispone de ocho segundos. Si ninguno conecta, se abre el portal sin bloquear el temporizador, el control automatico ni el resto del firmware. Desde `/config` se puede consultar la IP, ver el numero de perfiles o borrar todas las redes guardadas.
 
 ## Temporizador personalizado
 
@@ -163,10 +193,20 @@ Por defecto, `LOW` usa mas repeticiones que el resto para mejorar la fiabilidad 
 - `GET /config.html` -> pagina de configuracion.
 - `GET /style.css` -> hoja de estilos.
 - `GET /app.js` -> JavaScript de la web.
+- `GET /wifi` -> portal de configuracion WiFi.
+- `GET /wifi/status` -> conexion, IP, SSID, RSSI y modo IP en JSON.
+- `GET /wifi/scan` -> redes WiFi disponibles en JSON.
+- `POST /wifi/scan/start` -> inicia un escaneo WiFi manual asincrono.
+- `POST /wifi/save` -> guarda las credenciales y la configuracion IP.
+- `POST /wifi/profile/delete` -> elimina un perfil WiFi individual.
+- `POST /wifi/finish` -> cierra el punto de acceso tras conectar.
+- `POST /wifi/reset` -> borra todos los perfiles y abre el portal.
 - `GET /localtime` -> hora local.
 - `GET /localdate` -> fecha local.
 - `GET /temperature` -> temperatura actual.
 - `GET /humidity` -> humedad actual.
+- `GET /api/status` -> telemetria, temporizador y automatico en una unica respuesta.
+- `GET /system/status` -> nucleos usados, ocupacion de la cola y heap libre.
 - `GET /botones?button=luz|2h|4h|8h|high|med|low|off` -> envio de orden RF.
 - `GET /temporizador?button=low|med|high&hours=0&minutes=30` -> programa temporizador.
 - `GET /temporizador?cancel=1` -> cancela temporizador.
@@ -187,17 +227,27 @@ Se usa `Preferences` con el namespace `fancontrol` para guardar:
 - Umbrales de temperatura y humedad.
 - Repeticiones RF.
 - Ultimo modo conocido del ventilador.
+- Hasta cinco perfiles con credenciales WiFi y modo DHCP/IP estatica.
+- IP, puerta de enlace, mascara y DNS independientes por perfil.
+- Indice de la ultima red conectada correctamente.
 
 El estado guardado es logico: el ESP32 recuerda el ultimo comando que envio, pero el ventilador no confirma recepcion RF. Si se usa el mando original o un comando RF falla, el estado puede quedar desincronizado.
 
 ## Funcionamiento interno
 
+- El nucleo 0 atiende WiFi, HTTP y OTA; el nucleo 1 procesa RF, temporizadores, sensores y control automatico.
+- Los endpoints validan y encolan las ordenes. Si la cola esta llena responden con HTTP `503` sin bloquear el servidor.
+- La cola procesa una orden por iteracion para evitar que varias transmisiones RF consecutivas monopolicen la logica.
+- Los comandos consecutivos de velocidad se compactan conservando el ultimo; los comandos de luz no se compactan porque son alternancias.
+- Los estados compartidos entre nucleos se consultan mediante snapshots protegidos por un mutex FreeRTOS.
+- La pagina principal consulta un estado unificado cada 10 segundos y mantiene localmente la cuenta atras del temporizador.
+- Los cambios de automatico, RF y estado del ventilador se agrupan durante un segundo antes de escribir NVS.
 - La temperatura y la humedad se actualizan cada 30 segundos.
 - La hora y la fecha se refrescan periodicamente desde `ESP32Time`.
 - El modo automatico se evalua periodicamente y evita cambios demasiado seguidos.
 - Los comandos manuales cancelan el temporizador y desactivan el automatico.
 - El temporizador desactiva el automatico mientras esta activo.
-- Si la WiFi cae, el firmware intenta reconectarse.
+- Si la WiFi cae, el firmware prueba los perfiles guardados sin detener el resto del sistema y habilita el portal cuando ninguno conecta.
 - La web se actualiza por peticiones AJAX desde `app.js`.
 
 ## Limitaciones conocidas
@@ -205,12 +255,8 @@ El estado guardado es logico: el ESP32 recuerda el ultimo comando que envio, per
 - El control RF es unidireccional: no hay confirmacion real del ventilador.
 - El estado de luz encendida/apagada no se puede verificar sin hardware adicional.
 - Para verificar estado real haria falta medir consumo, luz ambiente o movimiento.
-- Las credenciales WiFi estan dentro de `src/main.cpp`.
 
 ## Posibles mejoras
 
-- Mover credenciales WiFi a un archivo no versionado o a configuracion desde portal web.
 - Añadir una pagina de diagnostico con RSSI, uptime, heap libre y ultimo comando RF.
-- Añadir sensor de luz para verificar la lampara.
-- Añadir medicion de consumo para verificar si el ventilador esta realmente encendido.
 - Migrar operaciones de configuracion de `GET` a `POST` si el proyecto crece.

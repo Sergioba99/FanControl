@@ -23,6 +23,10 @@ struct LogicCommand
   float medTemp;
   float highTemp;
   float humidityBoost;
+  float tempRiseHysteresis;
+  float tempFallHysteresis;
+  float humidityHysteresis;
+  unsigned long minChangeSeconds;
   unsigned int rfDefault;
   unsigned int rfLow;
   unsigned int rfMed;

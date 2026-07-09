@@ -33,6 +33,10 @@ const char* PARAM_AUTO_LOW = "low";
 const char* PARAM_AUTO_MED = "med";
 const char* PARAM_AUTO_HIGH = "high";
 const char* PARAM_AUTO_HUMIDITY = "humidity";
+const char* PARAM_AUTO_TEMP_RISE_HYSTERESIS = "tempRise";
+const char* PARAM_AUTO_TEMP_FALL_HYSTERESIS = "tempFall";
+const char* PARAM_AUTO_HUMIDITY_HYSTERESIS = "humidityHysteresis";
+const char* PARAM_AUTO_MIN_CHANGE = "minChange";
 const char* PARAM_RF_DEFAULT = "default";
 const char* PARAM_RF_LOW = "low";
 const char* PARAM_RF_MED = "med";
@@ -70,8 +74,10 @@ const long timeinterval = 50000;
 const unsigned int rfRepeatTransmit = 20;
 const unsigned int rfLowRepeatTransmit = 30;
 const unsigned long autoControlInterval = 60000;
-const unsigned long autoMinChangeInterval = 180000;
-const float autoHysteresis = 0.5;
+const float defaultTempRiseHysteresis = 1.0;
+const float defaultTempFallHysteresis = 2.0;
+const float defaultHumidityHysteresis = 5.0;
+const unsigned long defaultAutoMinChangeSeconds = 180;
 
 QueueHandle_t logicCommandQueue = nullptr;
 SemaphoreHandle_t stateMutex = nullptr;
@@ -140,6 +146,10 @@ struct AutoSettings
   float medTemp = 27.0;
   float highTemp = 29.0;
   float humidityBoost = 65.0;
+  float tempRiseHysteresis = defaultTempRiseHysteresis;
+  float tempFallHysteresis = defaultTempFallHysteresis;
+  float humidityHysteresis = defaultHumidityHysteresis;
+  unsigned long minChangeSeconds = defaultAutoMinChangeSeconds;
 };
 
 AutoSettings autoSettings;
@@ -160,6 +170,8 @@ unsigned long autoPreviousMillis = 0;
 unsigned long autoLastChangeMillis = 0;
 
 unsigned int getRfRepeatForCommand(const String &command);
+bool validateAutoSettings(float lowTemp, float medTemp, float highTemp, float humidityBoost,
+  float tempRiseHysteresis, float tempFallHysteresis, float humidityHysteresis, unsigned long minChangeSeconds);
 
 bool isFanControlCommand(const String &command)
 {
@@ -210,6 +222,10 @@ void loadAutoSettings()
   autoSettings.medTemp = prefs.getFloat("auto_med", 27.0);
   autoSettings.highTemp = prefs.getFloat("auto_high", 29.0);
   autoSettings.humidityBoost = prefs.getFloat("auto_hum", 65.0);
+  autoSettings.tempRiseHysteresis = prefs.getFloat("auto_thr", defaultTempRiseHysteresis);
+  autoSettings.tempFallHysteresis = prefs.getFloat("auto_thf", defaultTempFallHysteresis);
+  autoSettings.humidityHysteresis = prefs.getFloat("auto_hhy", defaultHumidityHysteresis);
+  autoSettings.minChangeSeconds = prefs.getULong("auto_min", defaultAutoMinChangeSeconds);
   rfSettings.defaultRepeat = prefs.getUInt("rf_def", rfRepeatTransmit);
   rfSettings.lowRepeat = prefs.getUInt("rf_low", rfLowRepeatTransmit);
   rfSettings.medRepeat = prefs.getUInt("rf_med", rfRepeatTransmit);
@@ -226,6 +242,18 @@ void loadAutoSettings()
   if (currentFanMode != "low" && currentFanMode != "med" && currentFanMode != "high" && currentFanMode != "off")
   {
     currentFanMode = "off";
+  }
+  if (!validateAutoSettings(autoSettings.lowTemp, autoSettings.medTemp, autoSettings.highTemp, autoSettings.humidityBoost,
+      autoSettings.tempRiseHysteresis, autoSettings.tempFallHysteresis, autoSettings.humidityHysteresis, autoSettings.minChangeSeconds))
+  {
+    autoSettings.lowTemp = 25.0;
+    autoSettings.medTemp = 27.0;
+    autoSettings.highTemp = 29.0;
+    autoSettings.humidityBoost = 65.0;
+    autoSettings.tempRiseHysteresis = defaultTempRiseHysteresis;
+    autoSettings.tempFallHysteresis = defaultTempFallHysteresis;
+    autoSettings.humidityHysteresis = defaultHumidityHysteresis;
+    autoSettings.minChangeSeconds = defaultAutoMinChangeSeconds;
   }
 
   if (autoSettings.enabled)
@@ -1055,6 +1083,10 @@ void flushPendingSettings(unsigned long currentMillis)
     prefs.putFloat("auto_med", automatic.medTemp);
     prefs.putFloat("auto_high", automatic.highTemp);
     prefs.putFloat("auto_hum", automatic.humidityBoost);
+    prefs.putFloat("auto_thr", automatic.tempRiseHysteresis);
+    prefs.putFloat("auto_thf", automatic.tempFallHysteresis);
+    prefs.putFloat("auto_hhy", automatic.humidityHysteresis);
+    prefs.putULong("auto_min", automatic.minChangeSeconds);
   }
   if (writes & NVS_DIRTY_RF)
   {
@@ -1282,6 +1314,10 @@ String getAutoSettingsJson()
   json += ",\"med\":" + String(settings.medTemp, 1);
   json += ",\"high\":" + String(settings.highTemp, 1);
   json += ",\"humidity\":" + String(settings.humidityBoost, 1);
+  json += ",\"tempRise\":" + String(settings.tempRiseHysteresis, 1);
+  json += ",\"tempFall\":" + String(settings.tempFallHysteresis, 1);
+  json += ",\"humidityHysteresis\":" + String(settings.humidityHysteresis, 1);
+  json += ",\"minChange\":" + String(settings.minChangeSeconds);
   json += ",\"currentMode\":\"" + fanMode + "\"";
   json += ",\"autoMode\":\"" + automaticMode + "\"}";
   return json;
@@ -1304,14 +1340,57 @@ String getRfSettingsJson()
   return json;
 }
 
-bool validateAutoSettings(float lowTemp, float medTemp, float highTemp, float humidityBoost)
+bool validateAutoSettings(float lowTemp, float medTemp, float highTemp, float humidityBoost,
+  float tempRiseHysteresis, float tempFallHysteresis, float humidityHysteresis, unsigned long minChangeSeconds)
 {
   if (lowTemp < 10.0 || highTemp > 45.0 || humidityBoost < 30.0 || humidityBoost > 95.0)
   {
     return false;
   }
+  if (tempRiseHysteresis < 0.0 || tempRiseHysteresis > 5.0 || tempFallHysteresis < 0.0 || tempFallHysteresis > 5.0)
+  {
+    return false;
+  }
+  if (humidityHysteresis < 0.0 || humidityHysteresis > 30.0 || minChangeSeconds > 3600UL)
+  {
+    return false;
+  }
 
   return lowTemp < medTemp && medTemp < highTemp;
+}
+
+int fanModeRank(const String &mode)
+{
+  if (mode == "low")
+  {
+    return 1;
+  }
+  if (mode == "med")
+  {
+    return 2;
+  }
+  if (mode == "high")
+  {
+    return 3;
+  }
+  return 0;
+}
+
+String fanModeFromRank(int rank)
+{
+  if (rank >= 3)
+  {
+    return "high";
+  }
+  if (rank == 2)
+  {
+    return "med";
+  }
+  if (rank == 1)
+  {
+    return "low";
+  }
+  return "off";
 }
 
 String increaseFanMode(const String &mode)
@@ -1333,43 +1412,48 @@ String increaseFanMode(const String &mode)
 
 String calculateAutoFanMode()
 {
-  float lowThreshold = autoSettings.lowTemp;
-  float medThreshold = autoSettings.medTemp;
-  float highThreshold = autoSettings.highTemp;
+  int modeRank = fanModeRank(autoFanMode);
+  float rise = autoSettings.tempRiseHysteresis;
+  float fall = autoSettings.tempFallHysteresis;
 
-  if (autoFanMode == "high")
+  if (modeRank < 1 && t >= autoSettings.lowTemp + rise)
   {
-    highThreshold -= autoHysteresis;
+    modeRank = 1;
   }
-  else if (autoFanMode == "med")
+  if (modeRank < 2 && t >= autoSettings.medTemp + rise)
   {
-    medThreshold -= autoHysteresis;
+    modeRank = 2;
   }
-  else if (autoFanMode == "low")
+  if (modeRank < 3 && t >= autoSettings.highTemp + rise)
   {
-    lowThreshold -= autoHysteresis;
-  }
-
-  String targetMode = "off";
-  if (t >= highThreshold)
-  {
-    targetMode = "high";
-  }
-  else if (t >= medThreshold)
-  {
-    targetMode = "med";
-  }
-  else if (t >= lowThreshold)
-  {
-    targetMode = "low";
+    modeRank = 3;
   }
 
-  if (h >= autoSettings.humidityBoost)
+  if (modeRank == 3 && t < autoSettings.highTemp - fall)
   {
-    targetMode = increaseFanMode(targetMode);
+    modeRank = 2;
+  }
+  if (modeRank == 2 && t < autoSettings.medTemp - fall)
+  {
+    modeRank = 1;
+  }
+  if (modeRank == 1 && t < autoSettings.lowTemp - fall)
+  {
+    modeRank = 0;
   }
 
-  return targetMode;
+  int targetRank = modeRank;
+  int currentRank = fanModeRank(autoFanMode);
+  if (h >= autoSettings.humidityBoost + autoSettings.humidityHysteresis)
+  {
+    targetRank = min(3, modeRank + 1);
+  }
+  else if (h > autoSettings.humidityBoost - autoSettings.humidityHysteresis && currentRank > modeRank)
+  {
+    targetRank = currentRank;
+  }
+
+  return fanModeFromRank(targetRank);
 }
 
 void runAutoControl(unsigned long currentMillis)
@@ -1391,7 +1475,8 @@ void runAutoControl(unsigned long currentMillis)
     return;
   }
 
-  if (autoLastChangeMillis != 0 && currentMillis - autoLastChangeMillis < autoMinChangeInterval)
+  unsigned long minChangeInterval = autoSettings.minChangeSeconds * 1000UL;
+  if (autoLastChangeMillis != 0 && currentMillis - autoLastChangeMillis < minChangeInterval)
   {
     return;
   }
@@ -1533,11 +1618,19 @@ void processLogicCommand(const LogicCommand &command)
     if (command.hasThresholds)
     {
       changed = changed || autoSettings.lowTemp != command.lowTemp || autoSettings.medTemp != command.medTemp ||
-        autoSettings.highTemp != command.highTemp || autoSettings.humidityBoost != command.humidityBoost;
+        autoSettings.highTemp != command.highTemp || autoSettings.humidityBoost != command.humidityBoost ||
+        autoSettings.tempRiseHysteresis != command.tempRiseHysteresis ||
+        autoSettings.tempFallHysteresis != command.tempFallHysteresis ||
+        autoSettings.humidityHysteresis != command.humidityHysteresis ||
+        autoSettings.minChangeSeconds != command.minChangeSeconds;
       autoSettings.lowTemp = command.lowTemp;
       autoSettings.medTemp = command.medTemp;
       autoSettings.highTemp = command.highTemp;
       autoSettings.humidityBoost = command.humidityBoost;
+      autoSettings.tempRiseHysteresis = command.tempRiseHysteresis;
+      autoSettings.tempFallHysteresis = command.tempFallHysteresis;
+      autoSettings.humidityHysteresis = command.humidityHysteresis;
+      autoSettings.minChangeSeconds = command.minChangeSeconds;
     }
     autoPreviousMillis = 0;
     unlockState();
@@ -2015,9 +2108,15 @@ void setup() {
       updated = true;
     }
 
-    if (request->hasParam(PARAM_AUTO_LOW) || request->hasParam(PARAM_AUTO_MED) || request->hasParam(PARAM_AUTO_HIGH) || request->hasParam(PARAM_AUTO_HUMIDITY))
+    if (request->hasParam(PARAM_AUTO_LOW) || request->hasParam(PARAM_AUTO_MED) || request->hasParam(PARAM_AUTO_HIGH) ||
+        request->hasParam(PARAM_AUTO_HUMIDITY) || request->hasParam(PARAM_AUTO_TEMP_RISE_HYSTERESIS) ||
+        request->hasParam(PARAM_AUTO_TEMP_FALL_HYSTERESIS) || request->hasParam(PARAM_AUTO_HUMIDITY_HYSTERESIS) ||
+        request->hasParam(PARAM_AUTO_MIN_CHANGE))
     {
-      if (!request->hasParam(PARAM_AUTO_LOW) || !request->hasParam(PARAM_AUTO_MED) || !request->hasParam(PARAM_AUTO_HIGH) || !request->hasParam(PARAM_AUTO_HUMIDITY))
+      if (!request->hasParam(PARAM_AUTO_LOW) || !request->hasParam(PARAM_AUTO_MED) || !request->hasParam(PARAM_AUTO_HIGH) ||
+          !request->hasParam(PARAM_AUTO_HUMIDITY) || !request->hasParam(PARAM_AUTO_TEMP_RISE_HYSTERESIS) ||
+          !request->hasParam(PARAM_AUTO_TEMP_FALL_HYSTERESIS) || !request->hasParam(PARAM_AUTO_HUMIDITY_HYSTERESIS) ||
+          !request->hasParam(PARAM_AUTO_MIN_CHANGE))
       {
         request->send(400, "text/plain", "Missing thresholds");
         return;
@@ -2027,12 +2126,21 @@ void setup() {
       float medTemp = 0.0;
       float highTemp = 0.0;
       float humidityBoost = 0.0;
+      float tempRiseHysteresis = 0.0;
+      float tempFallHysteresis = 0.0;
+      float humidityHysteresis = 0.0;
+      unsigned long minChangeSeconds = 0;
 
       if (!parseFloatNumber(request->getParam(PARAM_AUTO_LOW)->value(), lowTemp) ||
           !parseFloatNumber(request->getParam(PARAM_AUTO_MED)->value(), medTemp) ||
           !parseFloatNumber(request->getParam(PARAM_AUTO_HIGH)->value(), highTemp) ||
           !parseFloatNumber(request->getParam(PARAM_AUTO_HUMIDITY)->value(), humidityBoost) ||
-          !validateAutoSettings(lowTemp, medTemp, highTemp, humidityBoost))
+          !parseFloatNumber(request->getParam(PARAM_AUTO_TEMP_RISE_HYSTERESIS)->value(), tempRiseHysteresis) ||
+          !parseFloatNumber(request->getParam(PARAM_AUTO_TEMP_FALL_HYSTERESIS)->value(), tempFallHysteresis) ||
+          !parseFloatNumber(request->getParam(PARAM_AUTO_HUMIDITY_HYSTERESIS)->value(), humidityHysteresis) ||
+          !parseUnsignedNumber(request->getParam(PARAM_AUTO_MIN_CHANGE)->value(), minChangeSeconds) ||
+          !validateAutoSettings(lowTemp, medTemp, highTemp, humidityBoost, tempRiseHysteresis,
+            tempFallHysteresis, humidityHysteresis, minChangeSeconds))
       {
         request->send(400, "text/plain", "Invalid thresholds");
         return;
@@ -2043,6 +2151,10 @@ void setup() {
       command.medTemp = medTemp;
       command.highTemp = highTemp;
       command.humidityBoost = humidityBoost;
+      command.tempRiseHysteresis = tempRiseHysteresis;
+      command.tempFallHysteresis = tempFallHysteresis;
+      command.humidityHysteresis = humidityHysteresis;
+      command.minChangeSeconds = minChangeSeconds;
       updated = true;
     }
 

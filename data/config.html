@@ -64,6 +64,26 @@
                 <input id="auto-humidity" class="timer-input" type="text" name="humidity" inputmode="decimal" value="65.0" required>
                 <span class="setting-unit">%</span>
               </label>
+              <label class="setting-field" for="auto-temp-rise">
+                <span>Subida temp.</span>
+                <input id="auto-temp-rise" class="timer-input" type="text" name="tempRise" inputmode="decimal" value="1.0" required>
+                <span class="setting-unit">&deg;C</span>
+              </label>
+              <label class="setting-field" for="auto-temp-fall">
+                <span>Bajada temp.</span>
+                <input id="auto-temp-fall" class="timer-input" type="text" name="tempFall" inputmode="decimal" value="2.0" required>
+                <span class="setting-unit">&deg;C</span>
+              </label>
+              <label class="setting-field" for="auto-humidity-hysteresis">
+                <span>Margen humedad</span>
+                <input id="auto-humidity-hysteresis" class="timer-input" type="text" name="humidityHysteresis" inputmode="decimal" value="5.0" required>
+                <span class="setting-unit">%</span>
+              </label>
+              <label class="setting-field" for="auto-min-change">
+                <span>Espera cambios</span>
+                <input id="auto-min-change" class="timer-input" type="text" name="minChange" inputmode="numeric" pattern="[0-9]*" value="180" required>
+                <span class="setting-unit">s</span>
+              </label>
             </div>
             <div class="form-actions">
               <input class="update-button" type="submit" value="Guardar auto">
@@ -108,6 +128,6 @@
         </div>
       </div>
     </div>
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=19"></script>
 </body>
 </html>

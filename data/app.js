@@ -237,6 +237,10 @@ function updateAutoStatus() {
             document.getElementById("auto-med").value = Number(status.med).toFixed(1);
             document.getElementById("auto-high").value = Number(status.high).toFixed(1);
             document.getElementById("auto-humidity").value = Number(status.humidity).toFixed(1);
+            document.getElementById("auto-temp-rise").value = Number(status.tempRise).toFixed(1);
+            document.getElementById("auto-temp-fall").value = Number(status.tempFall).toFixed(1);
+            document.getElementById("auto-humidity-hysteresis").value = Number(status.humidityHysteresis).toFixed(1);
+            document.getElementById("auto-min-change").value = Number(status.minChange);
           }
         }
 
@@ -288,9 +292,16 @@ function sendAutoForm(form) {
   var med = parseDecimal(form.elements["med"].value);
   var high = parseDecimal(form.elements["high"].value);
   var humidity = parseDecimal(form.elements["humidity"].value);
+  var tempRise = parseDecimal(form.elements["tempRise"].value);
+  var tempFall = parseDecimal(form.elements["tempFall"].value);
+  var humidityHysteresis = parseDecimal(form.elements["humidityHysteresis"].value);
+  var minChange = parseInt(form.elements["minChange"].value, 10);
 
   if (isNaN(low) || isNaN(med) || isNaN(high) || isNaN(humidity) ||
+      isNaN(tempRise) || isNaN(tempFall) || isNaN(humidityHysteresis) || isNaN(minChange) ||
       low < 10 || high > 45 || humidity < 30 || humidity > 95 ||
+      tempRise < 0 || tempRise > 5 || tempFall < 0 || tempFall > 5 ||
+      humidityHysteresis < 0 || humidityHysteresis > 30 || minChange < 0 || minChange > 3600 ||
       !(low < med && med < high)) {
     setAutoStatusText("Umbrales no validos");
     return;
@@ -313,7 +324,11 @@ function sendAutoForm(form) {
     "&low=" + encodeURIComponent(low.toFixed(1)) +
     "&med=" + encodeURIComponent(med.toFixed(1)) +
     "&high=" + encodeURIComponent(high.toFixed(1)) +
-    "&humidity=" + encodeURIComponent(humidity.toFixed(1)), true);
+    "&humidity=" + encodeURIComponent(humidity.toFixed(1)) +
+    "&tempRise=" + encodeURIComponent(tempRise.toFixed(1)) +
+    "&tempFall=" + encodeURIComponent(tempFall.toFixed(1)) +
+    "&humidityHysteresis=" + encodeURIComponent(humidityHysteresis.toFixed(1)) +
+    "&minChange=" + encodeURIComponent(minChange), true);
   xhr.send();
 }
 
